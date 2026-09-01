@@ -1,0 +1,25 @@
+# 真机相机（占位：替换为你的标定值）
+input:
+  mode: camera
+  source: "0"
+  max_frames: 0
+
+detect:
+  engine: /absolute/path/to/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine
+
+camera:
+  matrix: [1400, 0, 720, 0, 1400, 540, 0, 0, 1]   # ← 标定
+  distortion: [0, 0, 0, 0, 0]                     # ← 标定
+  transform: [0, 0, 0, 1, 0, 0, 0]                # ← 相机→Odom (t + q)
+
+fire:
+  bullet_speed: 22.5                              # ← 发射仓标定
+  shoot_delay: 0.04                               # ← 发射仓标定
+  algorithmic_delay: 0.05
+
+display:
+  enabled: true
+  keypoints: true
+  aimpoint: true
+  state_text: true
+  error_text: true

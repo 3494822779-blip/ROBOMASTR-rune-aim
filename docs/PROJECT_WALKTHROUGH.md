@@ -1,3 +1,7 @@
+> ⚠️ **2026-09-01 重构说明**：项目已重构为新结构（src/{core,detect,track,fire,diag,debug} + config/ + tools/）。
+> 本文中的旧路径 `rmcs/module/...` / `rmcs/utility/...` 已失效，对应新位置见 `README.md` 目录结构；
+> 参数配置以 `config/*.yaml`（统一入口 `./build/rune_aim -c <yaml>`）为准。
+
 # rune_deepstream 项目全解析（梳理文档）
 
 > 适用对象：对项目完全不了解的新成员。

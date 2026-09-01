@@ -1,3 +1,7 @@
+> ⚠️ **2026-09-01 重构说明**：项目已重构为新结构（src/{core,detect,track,fire,diag,debug} + config/ + tools/）。
+> 本文中的旧路径 `rmcs/module/...` / `rmcs/utility/...` 已失效，对应新位置见 `README.md` 目录结构；
+> 参数配置以 `config/*.yaml`（统一入口 `./build/rune_aim -c <yaml>`）为准。
+
 # 端到端剖析：从物理世界到弹丸命中
 
 > 本文按**数据流主线**从头到尾剖析整个项目（含原项目 `rmcs_auto_aim_v2` 的完整系统）。

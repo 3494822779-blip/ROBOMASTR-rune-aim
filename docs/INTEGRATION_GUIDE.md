@@ -1,3 +1,7 @@
+> ⚠️ **2026-09-01 重构说明**：项目已重构为新结构（src/{core,detect,track,fire,diag,debug} + config/ + tools/）。
+> 本文中的旧路径 `rmcs/module/...` / `rmcs/utility/...` 已失效，对应新位置见 `README.md` 目录结构；
+> 参数配置以 `config/*.yaml`（统一入口 `./build/rune_aim -c <yaml>`）为准。
+
 # RMCS 火控 + 跟踪接入状态与使用指南
 
 > 更新：2026-09-01。**火控与跟踪已经连接完成并验证通过**（无需再拷贝原项目 `rmcs_auto_aim_v2` 的 FireController —— 本仓库已有更贴合能量机关的 `RuneFireControl`）。

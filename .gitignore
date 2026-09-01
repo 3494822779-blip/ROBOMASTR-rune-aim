@@ -1,6 +1,5 @@
-rmcs/build/
-rmcs/lib/
 build/
+lib/
 *.o
 *.a
 *.so

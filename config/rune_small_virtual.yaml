@@ -1,0 +1,33 @@
+# 小符 + 虚拟符（无 GPU，调参首选）
+input:
+  mode: virtual
+  max_frames: 0
+  hz: 200
+
+camera:
+  matrix: [1400, 0, 720, 0, 1400, 540, 0, 0, 1]
+  distortion: [0, 0, 0, 0, 0]
+
+track:
+  noise_observation: 2.0        # 虚拟观测无噪声，收紧帮助收敛
+
+fire:
+  bullet_speed: 24.5            # 与 virtual_rune 演示弹道匹配
+  shoot_delay: 0.04
+  algorithmic_delay: 0.05
+
+virtual_rune:
+  large: false
+  x: 6.670
+  y: 0.0
+  z: 2.172
+  face_yaw: 0.0
+  pixel_noise_px: 0.0
+  dropout_prob: 0.0
+
+display:
+  enabled: true
+  keypoints: true
+  aimpoint: true
+  state_text: true
+  error_text: true
