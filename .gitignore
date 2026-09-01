@@ -1,0 +1,7 @@
+rmcs/build/
+rmcs/lib/
+build/
+*.o
+*.a
+*.so
+__pycache__/
