@@ -22,7 +22,7 @@ endif()
 set_source_files_properties(src/detect/detector.cpp PROPERTIES OBJECT_OUTPUT_NAME rune_detector)
 set_source_files_properties(src/track/rune_model.cpp PROPERTIES OBJECT_OUTPUT_NAME rune_model)
 
-add_library(rune_full STATIC
+add_library(rune_core STATIC
   # ---- 检测 ----
   src/detect/detector.cpp
   src/detect/gpu_pipeline.cu
@@ -45,13 +45,13 @@ add_library(rune_full STATIC
   src/core/pnp.cpp
   src/core/config_loader.cpp
 )
-target_include_directories(rune_full PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rune_full PUBLIC ${OpenCV_LIBS} Eigen3::Eigen CUDA::cudart nvinfer yaml-cpp::yaml-cpp)
-target_compile_options(rune_full PRIVATE
+target_include_directories(rune_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(rune_core PUBLIC ${OpenCV_LIBS} Eigen3::Eigen CUDA::cudart nvinfer yaml-cpp::yaml-cpp)
+target_compile_options(rune_core PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>
   $<$<COMPILE_LANGUAGE:CUDA>:--Wno-deprecated-gpu-targets>
 )
-set_target_properties(rune_full PROPERTIES
+set_target_properties(rune_core PROPERTIES
   CUDA_STANDARD 17
   CUDA_STANDARD_REQUIRED ON
   POSITION_INDEPENDENT_CODE ON
@@ -59,12 +59,12 @@ set_target_properties(rune_full PROPERTIES
 
 # ---- 统一命令行入口（video / virtual / camera 三模式） ----
 add_executable(rune_aim tools/rune_aim.cpp)
-target_link_libraries(rune_aim PRIVATE rune_full)
+target_link_libraries(rune_aim PRIVATE rune_core)
 
 # ---- 检测性能基准 ----
 add_executable(rune_bench tools/rune_bench.cpp)
-target_link_libraries(rune_bench PRIVATE rune_full)
+target_link_libraries(rune_bench PRIVATE rune_core)
 
 # ---- 链路延迟标定 ----
 add_executable(delay_calib tools/delay_calib.cpp)
-target_link_libraries(delay_calib PRIVATE rune_full)
+target_link_libraries(delay_calib PRIVATE rune_core)

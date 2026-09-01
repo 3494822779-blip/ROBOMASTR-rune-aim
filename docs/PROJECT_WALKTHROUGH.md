@@ -2,7 +2,7 @@
 > 本文中的旧路径 `rmcs/module/...` / `rmcs/utility/...` 已失效，对应新位置见 `README.md` 目录结构；
 > 参数配置以 `config/*.yaml`（统一入口 `./build/rune_aim -c <yaml>`）为准。
 
-# rune_deepstream 项目全解析（梳理文档）
+# rune_aim 项目全解析（梳理文档）
 
 > 适用对象：对项目完全不了解的新成员。
 > 平台：Jetson（aarch64）· Ubuntu 22.04 · DeepStream 7.x · TensorRT 10.3 · CUDA 12.x · ROS 2 Humble
@@ -16,7 +16,7 @@
 | 路径 | 位置 | 内容 | 用途 |
 |---|---|---|---|
 | A. DeepStream 可视化应用 | `deepstream/` | GStreamer 管线 + nvinfer + 自定义输出解析插件，把检测结果画在画面上 | 模型部署验证 / 演示 |
-| B. RMCS C++ 静态库 | `rmcs/` | 直接调 TensorRT 的检测器 + EKF 跟踪器 + 转速拟合，产物 `lib/librune_full.a` | 给机器人主程序集成 |
+| B. RMCS C++ 静态库 | `rmcs/` | 直接调 TensorRT 的检测器 + EKF 跟踪器 + 转速拟合，产物 `lib/librune_core.a` | 给机器人主程序集成 |
 
 两者**互不调用**：A 用 DeepStream 的 nvinfer 元素做推理，B 用 TensorRT C++ API 自己做推理；它们各自都有完整的"推理 → 后处理"逻辑。README 里的两条命令对应这两条路径。
 
@@ -39,7 +39,7 @@
 ## 2. 目录结构总览
 
 ```
-rune_deepstream/
+rune_aim/
 ├── README.md            # 顶层说明（路径正确，以它为准）
 ├── model/               # 模型文件
 │   ├── Rune-v8n-fp16-20260624.onnx          # 11.7 MB，YOLOv8 风格
@@ -69,7 +69,7 @@ rune_deepstream/
 │   │       ├── rune_energy_fitter.*    # 线性/正弦转速拟合
 │   │       └── virtual_rune.*          # 虚拟符仿真器（按规则生成观测）
 │   ├── test/rune_video_test.cpp  # 检测器性能测试程序
-│   ├── lib/librune_full.a        # 构建产物（228 KB）
+│   ├── lib/librune_core.a        # 构建产物（228 KB）
 │   └── utility/                  # 头文件工具库（数学/图像/日志/ROS 适配等）
 ├── test/
 │   ├── rune_test_h264.mp4        # 测试视频（1440×1080, 50fps, 800 帧）
@@ -117,9 +117,9 @@ rune_deepstream/
 ### 4.1 运行命令（README 原文）
 
 ```bash
-cd /home/nvidia/rune_deepstream/deepstream/config
+cd /home/nvidia/rune_aim/deepstream/config
 ../bin/deepstream \
-  -s file:///home/nvidia/rune_deepstream/test/rune_test_h264.mp4 \
+  -s file:///home/nvidia/rune_aim/test/rune_test_h264.mp4 \
   -c config_infer_primary_rune_pose.txt
 ```
 
@@ -188,11 +188,11 @@ nvinfer 推理完后不会自动理解 YOLO 输出，需要这个插件把 `[18,
 ### 5.1 构建
 
 ```bash
-cd /home/nvidia/rune_deepstream/rmcs
+cd /home/nvidia/rune_aim/rmcs
 ./build.sh
 ```
 
-build.sh 做的事：检查工具链 → 运行 CMake（Release，C++23 + CUDA 17）→ 编译 → 执行 CTest → 拷贝 `build/librune_full.a` 到 `lib/`。RMCS 主链路不依赖 ROS 2。
+build.sh 做的事：检查工具链 → 运行 CMake（Release，C++23 + CUDA 17）→ 编译 → 执行 CTest → 拷贝 `build/librune_core.a` 到 `lib/`。RMCS 主链路不依赖 ROS 2。
 
 CMakeLists 只编译 6 个源文件（其余都是头文件或遗留代码）：
 
@@ -277,10 +277,10 @@ RuneModel::State / get_aimpoints()   → 击打点 3D 坐标 + 前馈角速度/�
 ### 5.6 测试程序 test/rune_video_test.cpp
 
 ```bash
-cd /home/nvidia/rune_deepstream/rmcs
+cd /home/nvidia/rune_aim/rmcs
 ./build/rune_video_test \
-  /home/nvidia/rune_deepstream/model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine \
-  /home/nvidia/rune_deepstream/test/rune_test_h264.mp4 [max_frames] [score_thr] [keypoint_thr]
+  /home/nvidia/rune_aim/model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine \
+  /home/nvidia/rune_aim/test/rune_test_h264.mp4 [max_frames] [score_thr] [keypoint_thr]
 ```
 
 逐帧跑 `RuneDetector::detect`，打印：帧数、检出帧数、目标总数、平均推理耗时、pipeline FPS。
@@ -297,7 +297,7 @@ cd /home/nvidia/rune_deepstream/rmcs
 ## 6. 两条路径怎么选 / 什么关系
 
 - **想快速看效果/验证模型部署** → 路径 A（deepstream 应用），开窗口看检测框。
-- **要做机器人上的感知闭环**（检测 + 跟踪 + 预测击打点）→ 路径 B（`librune_full.a`），把它链接进主程序（原 RMCS 项目里由 Tracker 调用 `RuneModel`，本仓库只抽出了 rune 相关部分）。
+- **要做机器人上的感知闭环**（检测 + 跟踪 + 预测击打点）→ 路径 B（`librune_core.a`），把它链接进主程序（原 RMCS 项目里由 Tracker 调用 `RuneModel`，本仓库只抽出了 rune 相关部分）。
 - 两者共享同一个模型（model/ 下的 ONNX/engine）和同一套输出语义（5 关键点 + 3 类别），但推理代码互不共用。
 
 ---
@@ -323,4 +323,4 @@ cd /home/nvidia/rune_deepstream/rmcs
 - **engine 和 onnx 用哪个？** nvinfer 优先用 `model-engine-file`；engine 与系统 TRT 10.3 匹配，可直接用。
 - **改阈值在哪？** 路径 A：`config_infer_primary_rune_pose.txt` 的 `pre-cluster-threshold`（0.8）+ 插件里硬编码的 `kKeypointThreshold`(0.8)/`kNmsDistance`(30)/`kBoxPadding`(0.15)；路径 B：`RuneDetector::Config`（score/keypoint/center_distance 等，可被 YAML `rune_network` 节点覆盖，见 NEURAL_RUNE_INTEGRATION.md）。
 - **测试视频**：`test/rune_test_h264.mp4`（1440×1080、50fps、800 帧）；`rune_test.avi` 是指向外部目录的软链，若目标不存在则失效，不影响。
-- **路径不一致**：docs/ 两篇旧笔记写的 `/home/nvidia/project/rune_deepstream/...` 是旧位置，README.md 的 `/home/nvidia/rune_deepstream/...` 才是当前实际路径。
+- **路径不一致**：docs/ 两篇旧笔记写的 `/home/nvidia/project/rune_aim/...` 是旧位置，README.md 的 `/home/nvidia/rune_aim/...` 才是当前实际路径。

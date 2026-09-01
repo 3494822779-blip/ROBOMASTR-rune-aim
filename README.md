@@ -6,7 +6,7 @@
 ## 快速开始
 
 ```bash
-./build.sh                                    # 一键构建（输出 build/ 与 lib/librune_full.a）
+./build.sh                                    # 一键构建（输出 build/ 与 lib/librune_core.a）
 
 ./build/rune_aim -c config/rune_small_virtual.yaml   # 小符虚拟符闭环（无 GPU，调参首选）
 ./build/rune_aim -c config/rune_large_virtual.yaml   # 大符（正弦）虚拟符闭环
@@ -19,7 +19,7 @@
 ## 目录结构
 
 ```
-rune_deepstream/
+rune_aim/
 ├── config/          ★ 所有参数集中于此：一个场景 = 一个 yaml
 ├── src/             源码（单层功能目录）
 │   ├── core/        基础：类型/相机/PnP/弹道支撑/参数加载（config_loader）

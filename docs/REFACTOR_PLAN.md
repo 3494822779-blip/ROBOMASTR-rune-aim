@@ -1,4 +1,4 @@
-# 项目重构方案（rune_deepstream → rune_aim）
+# 项目重构方案（rune_aim → rune_aim）
 
 > 状态：✅ 已执行（2026-09-01）。实施结果见 commit 记录与 README；小符/大符闭环回归误差 0.03°/0.02°，优于基线。
 > 目标：易改参数、可视化调试方便、结构明了、终端命令行启动、参数集中一个文件夹。
@@ -37,7 +37,7 @@
 ## 3. 新目录结构
 
 ```
-rune_deepstream/                       # 项目根（重构后 rmcs/、app/、test/ 均消失）
+rune_aim/                       # 项目根（重构后 rmcs/、app/、test/ 均消失）
 ├── README.md                          # 唯一使用说明（构建/运行/参数说明）
 ├── build.sh                           # 一键构建
 ├── CMakeLists.txt
@@ -239,7 +239,7 @@ display:                   # 可视化调试开关
    - C. 保留在根目录不动
 2. **命名空间** `rmcs::` 是否改成 `rune::`？（推荐保留，改动大且无功能收益；除非你想要 100% 属于自己）
 3. **类名**：`RuneDetector/RuneModel/RuneFireControl` 保留？（推荐保留，已清晰）
-4. **库形态**：继续产出 `librune_full.a` 静态库 + 独立可执行？（推荐保留，方便外部集成）
+4. **库形态**：继续产出 `librune_core.a` 静态库 + 独立可执行？（推荐保留，方便外部集成）
 5. **测试视频**：`test/rune_test_h264.mp4` 移入 `data/`？（推荐，与结构统一）
 
 ---

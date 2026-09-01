@@ -51,7 +51,7 @@
   → 写入 camera_feature + observable.feature（两处，供 PnP 与 EKF 观测共用）
 ```
 
-> ⚠️ 本仓库（rune_deepstream）没有这个调用方——它被抽取成了独立库；相机参数注入发生在原项目 `Tracker` 里。
+> ⚠️ 本仓库（rune_aim）没有这个调用方——它被抽取成了独立库；相机参数注入发生在原项目 `Tracker` 里。
 
 ---
 

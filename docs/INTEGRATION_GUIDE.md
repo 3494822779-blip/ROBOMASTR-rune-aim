@@ -55,7 +55,7 @@ rmcs/
 ### 3.1 构建（已构建，需要时重跑）
 
 ```bash
-cd /home/nvidia/rune_deepstream/rmcs
+cd /home/nvidia/rune_aim/rmcs
 ./build.sh     # 或: cmake --build build -j2（增量）
 ```
 
@@ -77,8 +77,8 @@ cd /home/nvidia/rune_deepstream/rmcs
 
 ```bash
 ./build/rune_video_aim \
-  /home/nvidia/rune_deepstream/model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine \
-  /home/nvidia/rune_deepstream/test/rune_test_h264.mp4 \
+  /home/nvidia/rune_aim/model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine \
+  /home/nvidia/rune_aim/test/rune_test_h264.mp4 \
   [max_frames] [fx] [fy] [cx] [cy]
 ```
 
