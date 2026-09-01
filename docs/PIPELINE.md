@@ -33,7 +33,7 @@
 
 ## 2. 环节一：观测与神经检测（RuneDetector）
 
-**文件**：`module/detector/rune.cpp` + `module/gpu/rune_gpu.cu`（CUDA 预处理/细化）
+**文件**：`src/detect/detector.cpp` + `src/detect/gpu_pipeline.cu`（CUDA 预处理/细化）
 
 ### 2.1 模型与输出
 
@@ -79,7 +79,7 @@ BGR 帧 ──(CUDA)──▶ letterbox 等比缩放+居中填充到 640×480 �
 
 ## 3. 环节二：初始化位姿恢复（PnP 多候选投票）
 
-**文件**：`module/tracker/model/rune.cpp`（`init()`）+ `utility/math/solve_pnp/pnp_solution.cpp`
+**文件**：`src/track/rune_model.cpp`（`init()`）+ `src/core/pnp.cpp`
 
 ### 3.1 时机
 
@@ -111,7 +111,7 @@ BGR 帧 ──(CUDA)──▶ letterbox 等比缩放+居中填充到 640×480 �
 
 ## 4. 环节三：EKF 跟踪（RuneModel）
 
-**文件**：`module/tracker/model/rune.cpp`（1053 行核心）
+**文件**：`src/track/rune_model.cpp`（1053 行核心）
 
 ### 4.1 状态与模型
 
@@ -164,7 +164,7 @@ x = [ x, y, z,          ω(旋转角速度), θ(旋转角), ψ(符面朝向yaw) 
 
 ## 5. 环节四：旋转运动建模（RuneEnergyFitter）
 
-**文件**：`module/tracker/model/rune_energy_fitter.cpp`
+**文件**：`src/track/energy_fitter.cpp`
 
 ### 5.1 模型形式
 
@@ -208,7 +208,7 @@ x = [ x, y, z,          ω(旋转角速度), θ(旋转角), ψ(符面朝向yaw) 
 
 ## 6. 环节五：命中预测外推（State::transition）
 
-**文件**：`module/tracker/model/rune.cpp`（`State::transition`）
+**文件**：`src/track/rune_model.cpp`（`State::transition`）
 
 把状态推进 `dt` 秒（火控在"当前时刻 + 延迟 + 飞行时间"处求瞄准点）：
 
@@ -226,7 +226,7 @@ x = [ x, y, z,          ω(旋转角速度), θ(旋转角), ψ(符面朝向yaw) 
 
 ## 7. 环节六：弹道解算（TrajectorySolution）
 
-**文件**：`module/fire_control/trajectory_solution.cpp`（吸纳自 rmcs_auto_aim_v2）
+**文件**：`src/fire/trajectory.cpp`（吸纳自 rmcs_auto_aim_v2）
 
 - 物理模型：重力 g=9.81 + **平方空气阻力**（系数 0.003），`dt=5ms` 数值积分
 - 求解：俯仰角迭代（最多 10 次，高度误差 < 1mm 收敛，俯仰上限 80°）
@@ -241,7 +241,7 @@ x = [ x, y, z,          ω(旋转角速度), θ(旋转角), ψ(符面朝向yaw) 
 
 ## 8. 环节七：火控决策（RuneFireControl）
 
-**文件**：`module/fire_control/rune_fire_control.cpp`（新增，RP RuneDecisionModule 状态机设计）
+**文件**：`src/fire/fire_control.cpp`（新增，RP RuneDecisionModule 状态机设计）
 
 ### 8.1 每帧流程
 
@@ -302,7 +302,7 @@ x = [ x, y, z,          ω(旋转角速度), θ(旋转角), ψ(符面朝向yaw) 
 
 ## 9. 环节八：误差诊断（RuneDiagnostics）
 
-**文件**：`module/diagnostics/rune_diagnostics.cpp`（新增，RP PowerRuneDiagnostics 设计）
+**文件**：`src/diag/diagnostics.cpp`（新增，RP PowerRuneDiagnostics 设计）
 
 **核心思想**：火控求解成功时记录「预测命中时刻 + 预测相位」；每帧记录实测相位（EKF 校正后的 `rotation_angle`）；当真实观测时刻到达命中时刻（±1ms 容差）时配对，误差 = wrap(实测 − 预测)。
 
@@ -319,7 +319,7 @@ push_observation(t, θ_obs)       ← 每帧 EKF 校正后
 
 ## 9.5 链路延迟标定（DelayCalibrator）
 
-**文件**：`module/diagnostics/delay_calibrator.{hpp,cpp}`（吸纳自 Climber serial_delay 核心算法）
+**文件**：`src/diag/delay_calibrator.{hpp,cpp}`（吸纳自 Climber serial_delay 核心算法）
 
 **用途**：实测 `RuneFireControl::Config.algorithmic_delay`（算法链路延迟）——这是弹道/火控里唯一不能靠打靶测、只能靠信号相关性测的参数。
 

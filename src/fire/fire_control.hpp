@@ -14,6 +14,7 @@
 #include "track/rune_model.hpp"
 #include "core/clock.hpp"
 
+#include <memory>
 #include <string>
 
 namespace rmcs {
@@ -93,7 +94,7 @@ public:
 
 private:
     struct Impl;
-    Impl* impl_;
+    std::unique_ptr<Impl> impl_;
     Config config_;
 };
 

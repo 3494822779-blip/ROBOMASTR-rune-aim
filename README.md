@@ -12,7 +12,7 @@
 ./build/rune_aim -c config/rune_large_virtual.yaml   # 大符（正弦）虚拟符闭环
 ./build/rune_aim -c config/rune_video.yaml           # 视频回放（需 GPU 引擎 + 图形会话）
 ./build/rune_aim -c config/camera_sentry.yaml        # 真机相机（替换标定值后使用）
-```
+```随后再次构建验
 
 按键：`q`/`ESC` 退出 · `空格` 暂停 · `s` 截图 · `v` 开关可视化。
 
@@ -102,3 +102,4 @@ template.yaml 一处即可全局生效；启动日志打印 base/scene 两层与
 | P2-7 | 剥离 rclcpp：库纯 C++，构建/运行不依赖 ROS2 |
 | P2-8 | RuneFireControl::Command 透出 ff_v/ff_a 云台前馈 |
 | **R1** | **全面重构：src/{core,detect,track,fire,diag,debug} 单层结构 + config/ 参数集中 + 统一 CLI（rune_aim）+ 删除 deepstream/kernel/refiner/无用 utility** |
+轨迹积分 Euler → RK4，提高远距/高速场景精度

@@ -30,10 +30,27 @@ constexpr auto estimate(double v0, double pitch, double d, double air_resistance
         prev_y = y;
         prev_t = t;
 
-        const double v = std::sqrt(vx * vx + vy * vy);
+        const auto accel = [&](double vx_, double vy_) {
+            const double v = std::sqrt(vx_ * vx_ + vy_ * vy_);
+            return std::pair {
+                -air_resistance * v * vx_,
+                -(kGravity + air_resistance * v * vy_)
+            };
+        };
 
-        vx -= air_resistance * v * vx * kEstimateDeltaTime;
-        vy -= (kGravity + air_resistance * v * vy) * kEstimateDeltaTime;
+        const auto [ax1, ay1] = accel(vx, vy);
+        const double vx2 = vx + ax1 * 0.5 * kEstimateDeltaTime;
+        const double vy2 = vy + ay1 * 0.5 * kEstimateDeltaTime;
+        const auto [ax2, ay2] = accel(vx2, vy2);
+        const double vx3 = vx + ax2 * 0.5 * kEstimateDeltaTime;
+        const double vy3 = vy + ay2 * 0.5 * kEstimateDeltaTime;
+        const auto [ax3, ay3] = accel(vx3, vy3);
+        const double vx4 = vx + ax3 * kEstimateDeltaTime;
+        const double vy4 = vy + ay3 * kEstimateDeltaTime;
+        const auto [ax4, ay4] = accel(vx4, vy4);
+
+        vx += (ax1 + 2.0 * ax2 + 2.0 * ax3 + ax4) * (kEstimateDeltaTime / 6.0);
+        vy += (ay1 + 2.0 * ay2 + 2.0 * ay3 + ay4) * (kEstimateDeltaTime / 6.0);
 
         x += vx * kEstimateDeltaTime;
         y += vy * kEstimateDeltaTime;

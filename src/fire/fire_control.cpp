@@ -56,6 +56,11 @@ struct RuneFireControl::Impl {
     auto aim_and_ballistic(const RuneModel::State& state, double& yaw, double& pitch,
         double& fly_time, bool& has_blade, Vector3d& ff_v, Vector3d& ff_a) -> bool {
 
+        if (!std::isfinite(config.bullet_speed) || config.bullet_speed <= 0.0 ||
+            !std::isfinite(config.max_fly_time) || config.max_fly_time <= 0.0 ||
+            config.max_iterate <= 0)
+            return false;
+
         const auto center  = Point3d { state.x, state.y, state.z };
         const auto distance = std::hypot(std::hypot(center.x, center.y), center.z);
         if (distance < 1e-6) return false;
@@ -117,14 +122,24 @@ struct RuneFireControl::Impl {
 RuneFireControl::RuneFireControl() noexcept : RuneFireControl(Config { }) { }
 
 RuneFireControl::RuneFireControl(const Config& config) noexcept
-    : impl_(new Impl(config)), config_(config) { }
+    : impl_(std::make_unique<Impl>(config)), config_(config) { }
 
-RuneFireControl::~RuneFireControl() noexcept { delete impl_; }
+RuneFireControl::~RuneFireControl() noexcept = default;
 
 void RuneFireControl::reset() noexcept { *impl_ = Impl(config_); }
 
 auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Command {
     auto& im = *impl_;
+
+    // Reject corrupt tracker output before it can reach ballistic math or the
+    // firing state machine. A single NaN must never result in a fire command.
+    if (!std::isfinite(state.x) || !std::isfinite(state.y) || !std::isfinite(state.z) ||
+        !std::isfinite(state.rotation_angle) || !std::isfinite(state.rotation_speed)) {
+        auto cmd = Command{};
+        cmd.state = State::LOST;
+        cmd.reason = "invalid tracker state";
+        return cmd;
+    }
 
     // ---- 时间步进 ----
     double dt = 0.0;
@@ -198,7 +213,8 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
             im.firing_time = 0.0;
         }
         im.recover_elapsed += dt;
-        const auto k = std::min(1.0, im.recover_elapsed / config_.recover_time);
+        const auto recover_duration = std::max(1e-6, config_.recover_time);
+        const auto k = std::min(1.0, im.recover_elapsed / recover_duration);
         const auto [center_yaw, center_pitch] = direction_to_yaw_pitch(im.recover_center);
         cmd.yaw   = im.recover_start_yaw + (center_yaw - im.recover_start_yaw) * k;
         cmd.pitch = im.recover_start_pitch + (center_pitch - im.recover_start_pitch) * k;

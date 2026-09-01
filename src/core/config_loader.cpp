@@ -3,6 +3,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cstdio>
+#include <filesystem>
+#include <algorithm>
 #include <optional>
 
 namespace rmcs::cfg {
@@ -80,6 +82,10 @@ auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
     cfg.track.init_center_gate      = get_or(track, "init_center_gate", cfg.track.init_center_gate);
     cfg.track.init_pitch_bound      = get_or(track, "init_pitch_bound", cfg.track.init_pitch_bound);
     cfg.track.diverge_face_angle    = get_or(track, "diverge_face_angle", cfg.track.diverge_face_angle);
+    cfg.track.diverge_cov_max       = get_or(track, "diverge_cov_max", cfg.track.diverge_cov_max);
+    cfg.track.diverge_pos_xy_max    = get_or(track, "diverge_pos_xy_max", cfg.track.diverge_pos_xy_max);
+    cfg.track.diverge_pos_z_max     = get_or(track, "diverge_pos_z_max", cfg.track.diverge_pos_z_max);
+    cfg.track.diverge_speed_factor  = get_or(track, "diverge_speed_factor", cfg.track.diverge_speed_factor);
 
     // ---- fire ----
     const auto fire = root["fire"];
@@ -139,9 +145,21 @@ auto load_into(const std::string& path, AppConfig& cfg) -> bool {
 AppConfig load_config(const std::string& yaml_path) {
     AppConfig cfg;
 
+    // Resolve paths relative to the scene file first, then fall back to the
+    // process working directory. This makes launching the binary from a
+    // different directory deterministic.
+    const std::filesystem::path scene_path { yaml_path };
+    const auto base_path = scene_path.parent_path() / "template.yaml";
+
     // ① 公共默认：config/template.yaml（唯一参数源；场景文件不写的字段都从这里来）
-    if (load_into("config/template.yaml", cfg)) {
-        std::printf("[config] base : config/template.yaml\n");
+    auto base_loaded = load_into(base_path.string(), cfg);
+    auto loaded_base_path = base_path;
+    if (!base_loaded && base_path != std::filesystem::path { "config/template.yaml" }) {
+        base_loaded = load_into("config/template.yaml", cfg);
+        loaded_base_path = "config/template.yaml";
+    }
+    if (base_loaded) {
+        std::printf("[config] base : %s\n", loaded_base_path.string().c_str());
     } else {
         std::printf("[config] base : (无 config/template.yaml，用代码内默认值)\n");
     }
@@ -150,6 +168,27 @@ AppConfig load_config(const std::string& yaml_path) {
         std::printf("[config] scene: %s\n", yaml_path.c_str());
     } else {
         std::fprintf(stderr, "[config] 无法读取配置文件: %s（仅用 template 默认）\n", yaml_path.c_str());
+    }
+
+    // Basic validation: fail safe by clamping unsafe values and report them
+    // loudly instead of silently running with physically invalid parameters.
+    auto clamp_report = [](const char* name, auto& value, auto lo, auto hi) {
+        const auto old = value;
+        value = std::clamp(value, lo, hi);
+        if (value != old)
+            std::fprintf(stderr, "[config] %s out of range; clamped to %.6g\n", name,
+                static_cast<double>(value));
+    };
+    clamp_report("input.hz", cfg.input.hz, 1.0, 2000.0);
+    clamp_report("detect.score_threshold", cfg.detect.score_threshold, 0.0F, 1.0F);
+    clamp_report("detect.keypoint_threshold", cfg.detect.keypoint_threshold, 0.0F, 1.0F);
+    clamp_report("fire.bullet_speed", cfg.fire.bullet_speed, 0.1, 200.0);
+    clamp_report("fire.max_fly_time", cfg.fire.max_fly_time, 0.001, 10.0);
+    clamp_report("fire.recover_time", cfg.fire.recover_time, 0.001, 10.0);
+    clamp_report("virtual_rune.dropout_prob", cfg.virtual_rune.dropout_prob, 0.0, 1.0);
+    if (cfg.fire.max_iterate < 1) {
+        std::fprintf(stderr, "[config] fire.max_iterate invalid; clamped to 1\n");
+        cfg.fire.max_iterate = 1;
     }
 
     // ---- 打印实际生效参数 ----

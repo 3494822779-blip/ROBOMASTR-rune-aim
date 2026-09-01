@@ -68,6 +68,11 @@ public:
         double init_pitch_bound     = 20.0;
 
         double diverge_face_angle = 45.0;
+
+        double diverge_cov_max = 150.0;
+        double diverge_pos_xy_max = 15.0;
+        double diverge_pos_z_max = 5.0;
+        double diverge_speed_factor = 10.0;
     };
 
     struct Addition {

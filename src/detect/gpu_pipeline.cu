@@ -105,9 +105,22 @@ __global__ void refine_kernel(const unsigned char* image, std::size_t pitch, int
 }
 }
 
-RuneGpuPipeline::~RuneGpuPipeline(){ cudaFree(image_); cudaFree(seeds_); cudaFree(results_); }
+RuneGpuPipeline::~RuneGpuPipeline(){
+    // cudaFree(nullptr) is valid, but explicit guards make teardown robust
+    // when construction or a previous allocation failed midway.
+    if (image_) cudaFree(image_);
+    if (seeds_) cudaFree(seeds_);
+    if (results_) cudaFree(results_);
+}
 auto RuneGpuPipeline::upload_bgr(const unsigned char* host,int width,int height,std::size_t host_pitch,cudaStream_t stream)->bool{
-    if(width!=width_||height!=height_){ cudaFree(image_); image_=nullptr; if(cudaMallocPitch(&image_,&pitch_,width*3,height)!=cudaSuccess)return false; width_=width;height_=height; }
+    if (!host || width <= 0 || height <= 0 || host_pitch < static_cast<std::size_t>(width) * 3)
+        return false;
+    if(width!=width_||height!=height_){
+        if (image_) cudaFree(image_);
+        image_=nullptr;
+        if(cudaMallocPitch(&image_,&pitch_,width*3,height)!=cudaSuccess)return false;
+        width_=width;height_=height;
+    }
     return cudaMemcpy2DAsync(image_,pitch_,host,host_pitch,width*3,height,cudaMemcpyHostToDevice,stream)==cudaSuccess;
 }
 auto RuneGpuPipeline::preprocess(float* tensor,int ow,int oh,float scale,int px,int py,cudaStream_t stream)->bool{
@@ -118,10 +131,14 @@ auto RuneGpuPipeline::refine(const Point* points,int target_count,RefineResult* 
     if(target_count<=0)return true;
     if(!points||!host_results||!image_)return false;
     if(target_count>capacity_){
+        // Grow geometrically so fluctuating detection counts do not trigger a
+        // device allocation/free on nearly every frame.
+        int new_capacity = capacity_ > 0 ? capacity_ : 32;
+        while (new_capacity < target_count) new_capacity *= 2;
         Point* new_seeds=nullptr;
         RefineResult* new_results=nullptr;
-        if(cudaMalloc(&new_seeds,target_count*5*sizeof(Point))!=cudaSuccess)return false;
-        if(cudaMalloc(&new_results,target_count*sizeof(RefineResult))!=cudaSuccess){
+        if(cudaMalloc(&new_seeds,static_cast<std::size_t>(new_capacity)*5*sizeof(Point))!=cudaSuccess)return false;
+        if(cudaMalloc(&new_results,static_cast<std::size_t>(new_capacity)*sizeof(RefineResult))!=cudaSuccess){
             cudaFree(new_seeds);
             return false;
         }
@@ -129,7 +146,7 @@ auto RuneGpuPipeline::refine(const Point* points,int target_count,RefineResult* 
         cudaFree(results_);
         seeds_=new_seeds;
         results_=new_results;
-        capacity_=target_count;
+        capacity_=new_capacity;
     }
     if(cudaMemcpyAsync(seeds_,points,target_count*5*sizeof(Point),cudaMemcpyHostToDevice,stream)!=cudaSuccess)return false;
     refine_kernel<<<(target_count+31)/32,32,0,stream>>>(image_,pitch_,width_,height_,seeds_,results_,target_count,br,ir,shift,grad);

@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <optional>
 #include <string>
 #include <thread>
@@ -107,50 +108,15 @@ int main(int argc, char** argv) {
     }
 
     // ---- 跟踪 ----
-    RuneModel::Config mcfg;
-    mcfg.noise_x = cfg.track.noise_x;
-    mcfg.noise_y = cfg.track.noise_y;
-    mcfg.noise_z = cfg.track.noise_z;
-    mcfg.noise_rotation_angle = cfg.track.noise_rotation_angle;
-    mcfg.noise_rotation_speed = cfg.track.noise_rotation_speed;
-    mcfg.noise_face_yaw = cfg.track.noise_face_yaw;
-    mcfg.noise_observation = cfg.track.noise_observation;
-    mcfg.gate_threshold = cfg.track.gate_threshold;
-    mcfg.init_seed_mean_error = cfg.track.init_seed_mean_error;
-    mcfg.init_seed_max_error = cfg.track.init_seed_max_error;
-    mcfg.init_center_gate = cfg.track.init_center_gate;
-    mcfg.init_pitch_bound = cfg.track.init_pitch_bound;
-    mcfg.diverge_face_angle = cfg.track.diverge_face_angle;
-    RuneModel model(mcfg);
+    RuneModel model(cfg.track);
     model.update_camera(cfg.camera.matrix, cfg.camera.distortion);
     model.update_transform(cfg.camera.transform());
 
     // ---- 火控 ----
-    RuneFireControl::Config fcfg;
-    fcfg.bullet_speed = cfg.fire.bullet_speed;
-    fcfg.shoot_delay = cfg.fire.shoot_delay;
-    fcfg.algorithmic_delay = cfg.fire.algorithmic_delay;
-    fcfg.max_fly_time = cfg.fire.max_fly_time;
-    fcfg.pitch_max = cfg.fire.pitch_max;
-    fcfg.fire_cooldown_init = cfg.fire.fire_cooldown_init;
-    fcfg.fire_cooldown = cfg.fire.fire_cooldown;
-    fcfg.fire_window = cfg.fire.fire_window;
-    fcfg.data_life = cfg.fire.data_life;
-    fcfg.recover_time = cfg.fire.recover_time;
-    fcfg.switch_angle = cfg.fire.switch_angle;
-    fcfg.switch_confirm = cfg.fire.switch_confirm;
-    fcfg.offset_yaw = cfg.fire.offset_yaw;
-    fcfg.offset_pitch = cfg.fire.offset_pitch;
-    fcfg.max_iterate = cfg.fire.max_iterate;
-    fcfg.iterate_epsilon = cfg.fire.iterate_epsilon;
-    RuneFireControl fire(fcfg);
+    RuneFireControl fire(cfg.fire);
 
     // ---- 诊断 ----
-    RuneDiagnostics::Config dcfg;
-    dcfg.match_tolerance_ms = cfg.diag.match_tolerance_ms;
-    dcfg.max_queue = cfg.diag.max_queue;
-    dcfg.max_history = cfg.diag.max_history;
-    RuneDiagnostics diag(dcfg);
+    RuneDiagnostics diag(cfg.diag);
 
     // ---- 数据源 ----
     std::optional<VirtualRuneModel> virtual_rune;
@@ -195,6 +161,14 @@ int main(int argc, char** argv) {
     int frame_id = 0, init_count = 0, aim_count = 0, fire_count = 0;
     bool paused = false;
     RuneFireControl::Command last_cmd{};  // 主循环计算，可视化只读，避免重复推进火控状态机
+    // Reuse per-frame containers to avoid allocator churn in the real-time loop.
+    std::vector<RuneIcon> icons;
+    std::vector<RuneBullseye> bullseyes;
+    icons.reserve(32);
+    bullseyes.reserve(32);
+
+    std::future<RuneDetector::Elements> pending_detect;
+    cv::Mat prev_frame;
 
     const auto run_frame = [&](const cv::Mat& frame, std::vector<RuneIcon>& icons,
                                 std::vector<RuneBullseye>& bullseyes, Timestamp now) {
@@ -229,7 +203,7 @@ int main(int argc, char** argv) {
         }
         diag.push_observation(now, state.rotation_angle);
         if (cmd.found && cmd.fire) {
-            const auto hit_dt = fcfg.algorithmic_delay + fcfg.shoot_delay + cmd.fly_time;
+            const auto hit_dt = cfg.fire.algorithmic_delay + cfg.fire.shoot_delay + cmd.fly_time;
             auto clone = state;
             clone.transition(hit_dt);
             diag.push_predict(now + std::chrono::duration_cast<Timestamp::duration>(
@@ -256,23 +230,67 @@ int main(int argc, char** argv) {
         last_now = now;
 
         cv::Mat frame;
-        std::vector<RuneIcon> icons;
-        std::vector<RuneBullseye> bullseyes;
+        icons.clear();
+        bullseyes.clear();
 
         if (is_virtual) {
             if (paused) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
             virtual_rune->update(now);
-            std::ranges::copy(virtual_rune->icons(), std::back_inserter(icons));
-            std::ranges::copy(virtual_rune->bullseyes(), std::back_inserter(bullseyes));
-            frame = cv::Mat::zeros(540, 960, CV_8UC3);  // 虚拟模式画布
+            const auto virtual_icons = virtual_rune->icons();
+            icons.insert(icons.end(), virtual_icons.begin(), virtual_icons.end());
+            const auto virtual_bullseyes = virtual_rune->bullseyes();
+            bullseyes.insert(bullseyes.end(), virtual_bullseyes.begin(), virtual_bullseyes.end());
+            frame = cv::Mat::zeros(540, 960, CV_8UC3);
+            if (!paused) run_frame(frame, icons, bullseyes, now);
         } else {
-            if (!capture.read(frame)) break;
-            const auto elements = detector.detect(frame);
-            icons = elements.icons;
-            bullseyes = elements.bullseyes;
-        }
+            // Double-buffered pipeline: overlap TensorRT inference with EKF+fire control.
+            // First iteration: no pending detection, just kick off async detect.
+            if (!pending_detect.valid()) {
+                if (!capture.read(frame)) break;
+                prev_frame = frame.clone();
+                pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
+                    return detector.detect(f);
+                }, frame.clone());
+                // No tracking data yet for this first frame — just grab and display.
+            } else {
+                // Retrieve detection results from previous frame's async detect.
+                auto elements = pending_detect.get();
+                icons = std::move(elements.icons);
+                bullseyes = std::move(elements.bullseyes);
 
-        if (!paused) run_frame(frame, icons, bullseyes, now);
+                // Kick off next frame's detection in parallel with this frame's tracking.
+                cv::Mat next_frame;
+                bool has_next = capture.read(next_frame);
+                if (has_next) {
+                    pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
+                        return detector.detect(f);
+                    }, next_frame.clone());
+                }
+                frame = prev_frame;
+                if (has_next) prev_frame = next_frame;
+
+                if (!paused) run_frame(frame, icons, bullseyes, now);
+
+                if (!has_next) {
+                    // Process display for last frame then exit.
+                    if (cfg.display.enabled) {
+                        cv::Mat display = frame.clone();
+                        debug::DrawOptions opt{
+                            .keypoints = cfg.display.keypoints,
+                            .aimpoint = cfg.display.aimpoint,
+                            .state_text = cfg.display.state_text,
+                            .error_text = cfg.display.error_text,
+                        };
+                        if (opt.keypoints) debug::draw_detection(display, icons, bullseyes);
+                        cv::imshow(window, display);
+                        cv::waitKey(1);
+                    }
+                    ++frame_id;
+                    break;
+                }
+                prev_frame = next_frame;
+            }
+        }
 
         // ---- 可视化（统一 draw 层）----
         if (cfg.display.enabled) {
@@ -288,7 +306,7 @@ int main(int argc, char** argv) {
                 const auto& cmd = last_cmd;  // 复用主循环结果，不重复调用 fire.update
                 if (opt.aimpoint) {
                     debug::draw_aimpoint(display, model.state(),
-                        fcfg.algorithmic_delay + fcfg.shoot_delay + cmd.fly_time, cfg.camera.matrix);
+                        cfg.fire.algorithmic_delay + cfg.fire.shoot_delay + cmd.fly_time, cfg.camera.matrix);
                 }
                 if (opt.state_text || opt.error_text) debug::draw_status(display, cmd, diag.stats(), opt);
             }

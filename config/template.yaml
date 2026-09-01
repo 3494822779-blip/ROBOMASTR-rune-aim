@@ -16,7 +16,7 @@ camera:                   # —— 相机标定（virtual 模式可用演示内�
   transform: [0, 0, 0, 1, 0, 0, 0]                # 相机→Odom 外参：t(x,y,z) + q(x,y,z,w)
 
 detect:                   # —— 检测（RuneDetector）——
-  engine: model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine   # TensorRT 引擎路径
+  engine: model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine   # Tens#orRT 引擎路径
   score_threshold: 0.8    # 类别置信度阈值（调低召回↑误检↑）
   keypoint_threshold: 0.8 # 关键点置信度阈值
   center_distance: 30.0   # NMS 关键点中心距离 px
@@ -37,9 +37,13 @@ track:                    # —— EKF 跟踪（RuneModel）——
   gate_threshold: 13.816  # 观测关联门限（马氏距离²，6 自由度 99%）
   init_seed_mean_error: 10.0  # 初始化重投影 RMS 误差上限 px
   init_seed_max_error: 20.0   # 初始化重投影最大误差上限 px
-  init_center_gate: 30.0      # 初始化符叶中心匹配门限 px
+  init_center_gate: 30.0      # 初始化符叶中心匹配门限 px#
   init_pitch_bound: 20.0      # 初始化符面俯仰角上限 degree
   diverge_face_angle: 45.0    # 发散判定：符面朝向与视线夹角 degree
+  diverge_cov_max: 150.0      # 协方差发散阈值
+  diverge_pos_xy_max: 15.0    # 位置 xy 发散上限 m
+  diverge_pos_z_max: 5.0      # 位置 z 发散上限 m
+  diverge_speed_factor: 10.0  # 角速度发散上限倍数（× π rad/s）
 
 fire:                     # —— 火控（RuneFireControl）——
   bullet_speed: 22.5      # ★ 弹速 m/s（发射仓标定，最影响预瞄量）

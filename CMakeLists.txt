@@ -3,7 +3,8 @@ project(rune_aim LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type (Debug, Release, RelWithDebInfo)")
+option(ENABLE_SANITIZERS "Enable ASan/UBSan for host C++ code" OFF)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d ximgproc videoio highgui)
 find_package(Eigen3 REQUIRED)
@@ -41,8 +42,7 @@ add_library(rune_core STATIC
   # ---- 核心 ----
   src/core/camera.cpp
   src/core/reprojection.cpp
-  src/core/corners.cpp
-  src/core/pnp.cpp
+  src/core/rune_pnp.cpp
   src/core/config_loader.cpp
 )
 target_include_directories(rune_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -51,6 +51,10 @@ target_compile_options(rune_core PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>
   $<$<COMPILE_LANGUAGE:CUDA>:--Wno-deprecated-gpu-targets>
 )
+if(ENABLE_SANITIZERS)
+  target_compile_options(rune_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined;-fno-omit-frame-pointer>)
+  target_link_options(rune_core PRIVATE -fsanitize=address,undefined)
+endif()
 set_target_properties(rune_core PROPERTIES
   CUDA_STANDARD 17
   CUDA_STANDARD_REQUIRED ON

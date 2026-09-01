@@ -8,7 +8,7 @@
 #include "core/hungarian.hpp"
 #include "core/mahalanobis.hpp"
 #include "core/reprojection.hpp"
-#include "core/pnp.hpp"
+#include "core/rune_pnp.hpp"
 
 #include <eigen3/Eigen/Geometry>
 
@@ -931,23 +931,6 @@ struct RuneModel::Impl {
                 }
             }
 
-            static auto* dump          = fopen("/tmp/rune_sine_dump.csv", "w");
-            static bool header_written = false;
-            if (dump) {
-                if (!header_written) {
-                    fprintf(dump, "update_count,t_rel,ekf_theta,model,C,v,a,omega,phase,cost\n");
-                    header_written = true;
-                }
-                int model = context.sine_valid ? 2 : (context.use_prediction_speed ? 1 : 0);
-                if (model == 2) {
-                    fprintf(dump, "%zu,%.6f,%.6f,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", update_count,
-                        t_now, state.rotation_angle, model, context.sine_C, context.sine_v,
-                        context.sine_a, context.sine_omega, context.sine_phase, context.sine_cost);
-                } else {
-                    fprintf(dump, "%zu,%.6f,%.6f,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", update_count,
-                        t_now, state.rotation_angle, model, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-                }
-            }
         }
 
         return inactive_corrected > 0;
@@ -987,12 +970,12 @@ struct RuneModel::Impl {
         }
 
         auto checks = std::array {
-            cov(kX, kX) > 150.0,
-            cov(kY, kY) > 150.0,
-            std::abs(state[kX]) > 15.0,
-            std::abs(state[kY]) > 15.0,
-            std::abs(state[kZ]) > 5.0,
-            std::abs(state[kW]) > 10.0 * std::numbers::pi,
+            cov(kX, kX) > config.diverge_cov_max,
+            cov(kY, kY) > config.diverge_cov_max,
+            std::abs(state[kX]) > config.diverge_pos_xy_max,
+            std::abs(state[kY]) > config.diverge_pos_xy_max,
+            std::abs(state[kZ]) > config.diverge_pos_z_max,
+            std::abs(state[kW]) > config.diverge_speed_factor * std::numbers::pi,
             face_angle > util::deg2rad(config.diverge_face_angle),
             state.hasNaN() == true,
             state.allFinite() == false,

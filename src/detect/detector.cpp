@@ -20,6 +20,8 @@ constexpr int kClasses = 3;
 constexpr int kPoints = 5;
 constexpr int kChannels = 18;
 constexpr int kCandidates = 6300;
+// 后处理只需要少量高质量候选；限制规模可避免异常模型输出拖慢实时线程。
+constexpr std::size_t kMaxPostprocessCandidates = 256;
 
 class Logger final : public nvinfer1::ILogger {
 public:
@@ -88,12 +90,22 @@ auto RuneDetector::initialize() noexcept -> bool {
     impl_->context.reset(impl_->engine->createExecutionContext());
     if (!impl_->context) return false;
 
-    impl_->input_name = impl_->engine->getIOTensorName(0);
-    impl_->output_name = impl_->engine->getIOTensorName(1);
+    // Tensor order is not guaranteed across TensorRT versions/exporters.
+    // Discover tensors by I/O mode instead of assuming indices 0/1.
+    for (int i = 0; i < impl_->engine->getNbIOTensors(); ++i) {
+        const auto* name = impl_->engine->getIOTensorName(i);
+        if (!name) continue;
+        if (impl_->engine->getTensorIOMode(name) == nvinfer1::TensorIOMode::kINPUT)
+            impl_->input_name = name;
+        else if (impl_->engine->getTensorIOMode(name) == nvinfer1::TensorIOMode::kOUTPUT)
+            impl_->output_name = name;
+    }
     if (!impl_->input_name || !impl_->output_name) return false;
     const auto input_dims = impl_->engine->getTensorShape(impl_->input_name);
     const auto output_dims = impl_->engine->getTensorShape(impl_->output_name);
-    if (input_dims.nbDims != 4 || input_dims.d[0] != 1 || input_dims.d[1] != 3 ||
+    if (impl_->engine->getTensorDataType(impl_->input_name) != nvinfer1::DataType::kFLOAT ||
+        impl_->engine->getTensorDataType(impl_->output_name) != nvinfer1::DataType::kFLOAT ||
+        input_dims.nbDims != 4 || input_dims.d[0] != 1 || input_dims.d[1] != 3 ||
         input_dims.d[2] != kInputHeight || input_dims.d[3] != kInputWidth ||
         output_dims.nbDims != 3 || output_dims.d[0] != 1 ||
         output_dims.d[1] != kChannels || output_dims.d[2] != kCandidates) return false;
@@ -169,6 +181,14 @@ auto RuneDetector::detect(const cv::Mat& image) noexcept -> Elements {
         }
     }
 
+    // 保留 Top-K 后再排序。完整 stable_sort 的复杂度为 O(N log N)，而
+    // nth_element 让常见的高候选帧更接近 O(N)，且不改变最终 NMS 逻辑。
+    if (candidates.size() > kMaxPostprocessCandidates) {
+        auto middle = candidates.begin() + static_cast<std::ptrdiff_t>(kMaxPostprocessCandidates);
+        std::nth_element(candidates.begin(), middle, candidates.end(),
+            [](const Candidate& a, const Candidate& b) { return a.quality > b.quality; });
+        candidates.erase(middle, candidates.end());
+    }
     std::stable_sort(candidates.begin(), candidates.end(),
         [](const Candidate& a, const Candidate& b) { return a.quality > b.quality; });
     auto& selected = impl_->selected;
