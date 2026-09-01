@@ -30,16 +30,9 @@ auto get_array(const YAML::Node& node, const char* key, const std::array<T, N>& 
 
 }  // namespace
 
-AppConfig load_config(const std::string& yaml_path) {
-    AppConfig cfg;
-
-    YAML::Node root;
-    try {
-        root = YAML::LoadFile(yaml_path);
-    } catch (...) {
-        std::fprintf(stderr, "[config] 无法读取配置文件: %s（使用全部默认值）\n", yaml_path.c_str());
-        return cfg;
-    }
+namespace {
+// 把一段 yaml（template 或场景文件）的全部字段写入 cfg；未写的键保持 cfg 现值。
+auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
 
     // ---- input ----
     const auto input = root["input"];
@@ -130,9 +123,36 @@ AppConfig load_config(const std::string& yaml_path) {
     cfg.display.aimpoint    = get_or(display, "aimpoint", cfg.display.aimpoint);
     cfg.display.state_text  = get_or(display, "state_text", cfg.display.state_text);
     cfg.display.error_text  = get_or(display, "error_text", cfg.display.error_text);
+}
+
+// 加载一个 yaml 文件并应用到 cfg；成功返回 true。
+auto load_into(const std::string& path, AppConfig& cfg) -> bool {
+    try {
+        apply_node(cfg, YAML::LoadFile(path));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+}  // namespace
+
+AppConfig load_config(const std::string& yaml_path) {
+    AppConfig cfg;
+
+    // ① 公共默认：config/template.yaml（唯一参数源；场景文件不写的字段都从这里来）
+    if (load_into("config/template.yaml", cfg)) {
+        std::printf("[config] base : config/template.yaml\n");
+    } else {
+        std::printf("[config] base : (无 config/template.yaml，用代码内默认值)\n");
+    }
+    // ② 场景覆盖：-c 指定的文件只写与 template 的差异
+    if (load_into(yaml_path, cfg)) {
+        std::printf("[config] scene: %s\n", yaml_path.c_str());
+    } else {
+        std::fprintf(stderr, "[config] 无法读取配置文件: %s（仅用 template 默认）\n", yaml_path.c_str());
+    }
 
     // ---- 打印实际生效参数 ----
-    std::printf("[config] %s\n", yaml_path.c_str());
     std::printf("[config] input: mode=%s source=%s max_frames=%d\n", cfg.input.mode.c_str(),
         cfg.input.source.c_str(), cfg.input.max_frames);
     std::printf("[config] camera: fx=%.1f fy=%.1f cx=%.1f cy=%.1f\n", cfg.camera.matrix[0],

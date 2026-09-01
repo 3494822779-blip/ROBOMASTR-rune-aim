@@ -1,8 +1,9 @@
 # config 参数参考（CONFIG_REFERENCE）
 
-> 所有可调参数集中在 `config/*.yaml`（完整母版见 `config/template.yaml`）。
-> 加载器：`src/core/config_loader.cpp`；启动时打印实际生效参数。
-> 修改 yaml 后**无需重新编译**，重启 `rune_aim` 即可生效。
+> 所有可调参数集中在 `config/*.yaml`。
+> **加载层次**：`config/template.yaml`（唯一参数源，公共默认）→ 场景 yaml（只写差异，覆盖）。
+> 改公共参数只改 template.yaml 一处；启动日志打印 base/scene 与实际生效值。
+> 加载器：`src/core/config_loader.cpp`；修改 yaml 后**无需重新编译**，重启 `rune_aim` 即可生效。
 
 ---
 

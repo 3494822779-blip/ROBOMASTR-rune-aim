@@ -1,30 +1,10 @@
 # 视频回放（需 GPU 引擎 + 图形会话）
+# 公共参数统一在 template.yaml（唯一参数源），本文件只写本场景差异。
+# 相机内参默认用 template 的 1440×1080 演示值；实车请用 camera_sentry.yaml 的标定值。
 input:
   mode: video
   source: data/rune_test_h264.mp4
   max_frames: 0
 
-model:                              # 兼容字段，实际读 detect.engine
-  engine: model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine
-
-camera:                             # 1440×1080 演示内参，实车换标定值
-  matrix: [1400, 0, 720, 0, 1400, 540, 0, 0, 1]
-  distortion: [0, 0, 0, 0, 0]
-
 detect:
   engine: model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine
-  score_threshold: 0.8
-  keypoint_threshold: 0.8
-  center_distance: 30.0
-
-fire:
-  bullet_speed: 22.5
-  shoot_delay: 0.04
-  algorithmic_delay: 0.05
-
-display:
-  enabled: true
-  keypoints: true
-  aimpoint: true
-  state_text: true
-  error_text: true

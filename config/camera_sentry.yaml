@@ -1,4 +1,5 @@
-# 真机相机（占位：替换为你的标定值）
+# 真机相机（占位模板：替换为你的标定值后使用）
+# 公共参数统一在 template.yaml；本文件写真机特有的 camera/engine 占位。
 input:
   mode: camera
   source: "0"
@@ -16,10 +17,3 @@ fire:
   bullet_speed: 22.5                              # ← 发射仓标定
   shoot_delay: 0.04                               # ← 发射仓标定
   algorithmic_delay: 0.05
-
-display:
-  enabled: true
-  keypoints: true
-  aimpoint: true
-  state_text: true
-  error_text: true
