@@ -74,6 +74,12 @@ AppConfig load_config(const std::string& yaml_path) {
 
     // ---- track ----
     const auto track = root["track"];
+    cfg.track.noise_x               = get_or(track, "noise_x", cfg.track.noise_x);
+    cfg.track.noise_y               = get_or(track, "noise_y", cfg.track.noise_y);
+    cfg.track.noise_z               = get_or(track, "noise_z", cfg.track.noise_z);
+    cfg.track.noise_rotation_angle  = get_or(track, "noise_rotation_angle", cfg.track.noise_rotation_angle);
+    cfg.track.noise_rotation_speed  = get_or(track, "noise_rotation_speed", cfg.track.noise_rotation_speed);
+    cfg.track.noise_face_yaw        = get_or(track, "noise_face_yaw", cfg.track.noise_face_yaw);
     cfg.track.noise_observation     = get_or(track, "noise_observation", cfg.track.noise_observation);
     cfg.track.gate_threshold        = get_or(track, "gate_threshold", cfg.track.gate_threshold);
     cfg.track.init_seed_mean_error  = get_or(track, "init_seed_mean_error", cfg.track.init_seed_mean_error);
@@ -98,6 +104,8 @@ AppConfig load_config(const std::string& yaml_path) {
     cfg.fire.switch_confirm     = get_or(fire, "switch_confirm", cfg.fire.switch_confirm);
     cfg.fire.offset_yaw         = get_or(fire, "offset_yaw", cfg.fire.offset_yaw);
     cfg.fire.offset_pitch       = get_or(fire, "offset_pitch", cfg.fire.offset_pitch);
+    cfg.fire.max_iterate        = get_or(fire, "max_iterate", cfg.fire.max_iterate);
+    cfg.fire.iterate_epsilon    = get_or(fire, "iterate_epsilon", cfg.fire.iterate_epsilon);
 
     // ---- virtual_rune ----
     const auto v = root["virtual_rune"];
@@ -112,12 +120,13 @@ AppConfig load_config(const std::string& yaml_path) {
     // ---- diag ----
     const auto diag = root["diag"];
     cfg.diag.match_tolerance_ms = get_or(diag, "match_tolerance_ms", cfg.diag.match_tolerance_ms);
+    cfg.diag.max_queue     = static_cast<std::size_t>(get_or(diag, "max_queue", static_cast<long long>(cfg.diag.max_queue)));
+    cfg.diag.max_history   = static_cast<std::size_t>(get_or(diag, "max_history", static_cast<long long>(cfg.diag.max_history)));
 
     // ---- display ----
     const auto display = root["display"];
     cfg.display.enabled     = get_or(display, "enabled", cfg.display.enabled);
     cfg.display.keypoints   = get_or(display, "keypoints", cfg.display.keypoints);
-    cfg.display.blades      = get_or(display, "blades", cfg.display.blades);
     cfg.display.aimpoint    = get_or(display, "aimpoint", cfg.display.aimpoint);
     cfg.display.state_text  = get_or(display, "state_text", cfg.display.state_text);
     cfg.display.error_text  = get_or(display, "error_text", cfg.display.error_text);

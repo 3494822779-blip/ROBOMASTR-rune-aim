@@ -108,6 +108,12 @@ int main(int argc, char** argv) {
 
     // ---- 跟踪 ----
     RuneModel::Config mcfg;
+    mcfg.noise_x = cfg.track.noise_x;
+    mcfg.noise_y = cfg.track.noise_y;
+    mcfg.noise_z = cfg.track.noise_z;
+    mcfg.noise_rotation_angle = cfg.track.noise_rotation_angle;
+    mcfg.noise_rotation_speed = cfg.track.noise_rotation_speed;
+    mcfg.noise_face_yaw = cfg.track.noise_face_yaw;
     mcfg.noise_observation = cfg.track.noise_observation;
     mcfg.gate_threshold = cfg.track.gate_threshold;
     mcfg.init_seed_mean_error = cfg.track.init_seed_mean_error;
@@ -135,11 +141,15 @@ int main(int argc, char** argv) {
     fcfg.switch_confirm = cfg.fire.switch_confirm;
     fcfg.offset_yaw = cfg.fire.offset_yaw;
     fcfg.offset_pitch = cfg.fire.offset_pitch;
+    fcfg.max_iterate = cfg.fire.max_iterate;
+    fcfg.iterate_epsilon = cfg.fire.iterate_epsilon;
     RuneFireControl fire(fcfg);
 
     // ---- 诊断 ----
     RuneDiagnostics::Config dcfg;
     dcfg.match_tolerance_ms = cfg.diag.match_tolerance_ms;
+    dcfg.max_queue = cfg.diag.max_queue;
+    dcfg.max_history = cfg.diag.max_history;
     RuneDiagnostics diag(dcfg);
 
     // ---- 数据源 ----
