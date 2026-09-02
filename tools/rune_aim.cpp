@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <thread>
@@ -288,7 +289,6 @@ int main(int argc, char** argv) {
                     ++frame_id;
                     break;
                 }
-                prev_frame = next_frame;
             }
         }
 
@@ -332,7 +332,7 @@ int main(int argc, char** argv) {
     std::printf("  aim_ok      : %d\n", aim_count);
     std::printf("  fire_frames : %d\n", fire_count);
     std::printf("  predict err : mean=%.4f rad (%.2f deg), max=%.4f rad (%.2f deg), n=%zu\n",
-        s.mean_error, s.mean_error * 180.0 / 3.14159265358979, s.max_error,
-        s.max_error * 180.0 / 3.14159265358979, s.samples);
+        s.mean_error, s.mean_error * 180.0 / std::numbers::pi, s.max_error,
+        s.max_error * 180.0 / std::numbers::pi, s.samples);
     return 0;
 }

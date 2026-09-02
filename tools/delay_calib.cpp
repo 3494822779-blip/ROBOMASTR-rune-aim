@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <numbers>
 #include <random>
 
 using namespace rmcs;
@@ -32,8 +33,8 @@ int main(int argc, char** argv) {
     std::normal_distribution<double> nd(0.0, noise_px);
 
     const auto yaw_signal = [](double t) {
-        return kYawAmp1 * std::sin(2.0 * 3.14159265358979 * kYawFreq1 * t)
-            + kYawAmp2 * std::sin(2.0 * 3.14159265358979 * kYawFreq2 * t);
+        return kYawAmp1 * std::sin(2.0 * std::numbers::pi * kYawFreq1 * t)
+            + kYawAmp2 * std::sin(2.0 * std::numbers::pi * kYawFreq2 * t);
     };
 
     DelayCalibrator calibrator;

@@ -229,10 +229,16 @@ struct RuneModel::Impl {
 
                 constexpr auto kMinZ     = 0.1;
                 const auto point_ocv     = util::ros2opencv_position(camera);
-                const auto projected_opt = util::reproject_point(Point3d { point_ocv }, feature);
-                if (point_ocv.z() > kMinZ && projected_opt) {
-                    projected[i] = Eigen::Vector2d { projected_opt->x, projected_opt->y };
-                    visible[i]   = true;
+                if (point_ocv.z() > kMinZ) {
+                    const auto projected_opt = util::reproject_point_fast(
+                        Point3d { point_ocv }, feature.camera_matrix, feature.distort_coeff);
+                    if (projected_opt) {
+                        projected[i] = Eigen::Vector2d { projected_opt->x, projected_opt->y };
+                        visible[i]   = true;
+                    } else {
+                        projected[i].setZero();
+                        visible[i] = false;
+                    }
                 } else {
                     projected[i].setZero();
                     visible[i] = false;

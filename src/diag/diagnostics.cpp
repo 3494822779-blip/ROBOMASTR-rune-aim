@@ -38,7 +38,7 @@ void RuneDiagnostics::push_observation(Timestamp time, double phase) {
     }
     if (predicts_.empty()) return;
 
-    // 找 |t_obs − t_hit| 最小的预测
+    // 找 |t_obs − t_hit| 最小的预测（predicts_ 按时间排序，距离先减后增，可提前退出）
     auto best     = predicts_.begin();
     auto best_abs = 1e30;
     for (auto it = predicts_.begin(); it != predicts_.end(); ++it) {
@@ -46,6 +46,8 @@ void RuneDiagnostics::push_observation(Timestamp time, double phase) {
         if (abs_dt < best_abs) {
             best_abs = abs_dt;
             best     = it;
+        } else if (abs_dt > best_abs) {
+            break; // 时间差开始增大，后续不可能更优
         }
     }
     if (best_abs > config_.match_tolerance_ms) return;

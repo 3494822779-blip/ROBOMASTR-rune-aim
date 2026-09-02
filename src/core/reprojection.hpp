@@ -67,5 +67,22 @@ namespace util {
     // 注意，point_camera 为相机坐标系，而非 ROS 系
     auto reproject_point(const Point3d& point_camera, const util::CameraFeature& camera)
         -> std::optional<Point2d>;
+
+    // 快速单点投影（含 5 参数畸变模型），避免 cv::projectPoints 的 vector/Mat 分配开销。
+    // point_camera 同为 OpenCV 相机坐标系，外参为恒等（已在调用方变换到相机系）。
+    inline auto reproject_point_fast(const Point3d& p,
+        const std::array<std::array<double, 3>, 3>& K,
+        const std::array<double, 5>& D) -> std::optional<Point2d> {
+        if (p.z <= 0.0) return std::nullopt;
+        const double xn = p.x / p.z;
+        const double yn = p.y / p.z;
+        const double r2 = xn * xn + yn * yn;
+        const double r4 = r2 * r2;
+        const double r6 = r4 * r2;
+        const double radial = 1.0 + D[0] * r2 + D[1] * r4 + D[4] * r6;
+        const double xd = xn * radial + 2.0 * D[2] * xn * yn + D[3] * (r2 + 2.0 * xn * xn);
+        const double yd = yn * radial + D[2] * (r2 + 2.0 * yn * yn) + 2.0 * D[3] * xn * yn;
+        return Point2d { K[0][0] * xd + K[0][2], K[1][1] * yd + K[1][2] };
+    }
 }
 }

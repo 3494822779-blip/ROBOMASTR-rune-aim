@@ -15,6 +15,7 @@ constexpr auto kEstimateTimeOutThreold   = double { 4.0 };
 constexpr auto kMinVelocityX             = double { 0.1 };
 constexpr auto kGravity                  = double { 9.81 };
 constexpr auto kAirResistanceCoefficient = double { 0.003 };
+constexpr auto kPitchUpdateGain           = double { 0.65 };
 
 constexpr auto estimate(double v0, double pitch, double d, double air_resistance)
     -> std::tuple<double, double> {
@@ -49,11 +50,17 @@ constexpr auto estimate(double v0, double pitch, double d, double air_resistance
         const double vy4 = vy + ay3 * kEstimateDeltaTime;
         const auto [ax4, ay4] = accel(vx4, vy4);
 
+        // Save pre-step velocities for trapezoidal position integration.
+        const double vx_old = vx;
+        const double vy_old = vy;
+
         vx += (ax1 + 2.0 * ax2 + 2.0 * ax3 + ax4) * (kEstimateDeltaTime / 6.0);
         vy += (ay1 + 2.0 * ay2 + 2.0 * ay3 + ay4) * (kEstimateDeltaTime / 6.0);
 
-        x += vx * kEstimateDeltaTime;
-        y += vy * kEstimateDeltaTime;
+        // Trapezoidal position integration: average pre- and post-step velocity.
+        // Noticeably more accurate than post-step-only (especially near the target).
+        x += 0.5 * (vx_old + vx) * kEstimateDeltaTime;
+        y += 0.5 * (vy_old + vy) * kEstimateDeltaTime;
         t += kEstimateDeltaTime;
 
         if (t > kEstimateTimeOutThreold || vx <= kMinVelocityX) [[unlikely]]
@@ -74,7 +81,9 @@ auto TrajectorySolution::solve() const -> std::optional<Output> {
     const auto target_d = std::hypot(input.point.x, input.point.y);
     const auto target_h = input.point.z;
 
-    if (input.v0 <= 0 || target_d <= 0) return std::nullopt;
+    if (!std::isfinite(input.v0) || !std::isfinite(input.point.x) ||
+        !std::isfinite(input.point.y) || !std::isfinite(input.point.z) ||
+        input.v0 <= 0 || target_d <= 0) return std::nullopt;
 
     const auto yaw = std::atan2(input.point.y, input.point.x);
 
@@ -83,6 +92,7 @@ auto TrajectorySolution::solve() const -> std::optional<Output> {
         auto [actual_h, t] =
             details::estimate(input.v0, pitch, target_d, details::kAirResistanceCoefficient);
 
+        if (!std::isfinite(actual_h) || !std::isfinite(t)) return std::nullopt;
         auto h_error = target_h - actual_h;
         if (std::abs(h_error) < details::kHeightErrorThreold) {
             auto result     = Output { };
@@ -92,7 +102,9 @@ auto TrajectorySolution::solve() const -> std::optional<Output> {
             return result;
         }
 
-        pitch += std::atan2(h_error, target_d);
+        // Damped Newton-like update prevents oscillation for close targets or
+        // when drag makes the height response strongly nonlinear.
+        pitch += details::kPitchUpdateGain * std::atan2(h_error, target_d);
 
         if (std::abs(pitch) > details::kMaxPitchThreold) break;
     }

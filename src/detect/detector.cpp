@@ -55,6 +55,7 @@ struct RuneDetector::Impl {
     std::vector<gpu::RefineResult> refined;
     const char* input_name = nullptr;
     const char* output_name = nullptr;
+    std::string loaded_engine_path;
     gpu::RuneGpuPipeline gpu_pipeline;
 
     ~Impl() {
@@ -70,15 +71,26 @@ RuneDetector::RuneDetector(RuneDetector&&) noexcept = default;
 auto RuneDetector::operator=(RuneDetector&&) noexcept -> RuneDetector& = default;
 
 auto RuneDetector::initialize() noexcept -> bool {
+    // Reuse an already deserialized engine when initialize() is called again
+    // with the same path (for example after a parameter-only reload). Engine
+    // deserialization is expensive and does not depend on detector thresholds.
+    if (impl_->context && impl_->engine && impl_->loaded_engine_path == config.engine_path)
+        return true;
     if (impl_->stream) { cudaStreamDestroy(impl_->stream); impl_->stream = nullptr; }
     if (impl_->input_device) { cudaFree(impl_->input_device); impl_->input_device = nullptr; }
     if (impl_->output_device) { cudaFree(impl_->output_device); impl_->output_device = nullptr; }
     impl_->context.reset();
     impl_->engine.reset();
     impl_->runtime.reset();
+    impl_->input_name = nullptr;
+    impl_->output_name = nullptr;
     std::ifstream file(config.engine_path, std::ios::binary | std::ios::ate);
-    if (!file) return false;
+    if (!file) {
+        std::cerr << "TensorRT engine open failed: " << config.engine_path << '\n';
+        return false;
+    }
     const auto size = file.tellg();
+    if (size <= 0) return false;
     file.seekg(0);
     std::vector<char> data(static_cast<std::size_t>(size));
     if (!file.read(data.data(), size)) return false;
@@ -118,8 +130,10 @@ auto RuneDetector::initialize() noexcept -> bool {
     impl_->selected.reserve(32);
     impl_->gpu_points.reserve(32 * kPoints);
     impl_->refined.reserve(32);
-    return impl_->context->setTensorAddress(impl_->input_name, impl_->input_device) &&
-           impl_->context->setTensorAddress(impl_->output_name, impl_->output_device);
+    const bool bound = impl_->context->setTensorAddress(impl_->input_name, impl_->input_device) &&
+                       impl_->context->setTensorAddress(impl_->output_name, impl_->output_device);
+    if (bound) impl_->loaded_engine_path = config.engine_path;
+    return bound;
 }
 
 auto RuneDetector::detect(const cv::Mat& image) noexcept -> Elements {

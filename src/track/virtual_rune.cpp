@@ -96,7 +96,8 @@ struct VirtualRuneModel::Impl {
             const auto point_cam = q_cam_from_odom * (world - cam_position);
             const auto point_ocv = util::ros2opencv_position(point_cam);
             if (point_ocv.z() <= kMinZ) return std::nullopt;
-            return util::reproject_point(Point3d { point_ocv }, camera);
+            return util::reproject_point_fast(
+                Point3d { point_ocv }, camera.camera_matrix, camera.distort_coeff);
         };
 
         const auto r_face = Eigen::AngleAxisd { state.face_yaw, Eigen::Vector3d::UnitZ() };
