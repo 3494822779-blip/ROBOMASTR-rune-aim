@@ -21,6 +21,7 @@ public:
         double z;
 
         Timestamp start_timestamp;
+        Timestamp current_timestamp;  // 当前模型时刻（视频模式为合成时间戳）
 
         double rotation_speed;
         double rotation_angle;

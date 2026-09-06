@@ -5,6 +5,7 @@ input:
   mode: video
   source: data/rune_test_h264.mp4
   max_frames: 0
+  video_fps: 50
 
 detect:
   engine: model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine

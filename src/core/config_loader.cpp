@@ -42,6 +42,7 @@ auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
     cfg.input.source     = get_or(input, "source", cfg.input.source);
     cfg.input.max_frames = get_or(input, "max_frames", cfg.input.max_frames);
     cfg.input.hz         = get_or(input, "hz", cfg.input.hz);
+    cfg.input.video_fps  = get_or(input, "video_fps", cfg.input.video_fps);
 
     // ---- camera ----
     const auto camera = root["camera"];

@@ -52,7 +52,7 @@ auto RuneModel::State::get_rotation_speed() const -> double { return rotation_sp
 
 auto RuneModel::State::get_aimpoints() const -> AimPoints {
     const auto converge_duration = std::chrono::seconds { sine_valid ? 6 : 3 };
-    if (Clock::now() - start_timestamp < converge_duration) return { };
+    if (current_timestamp - start_timestamp < converge_duration) return { };
 
     const auto r_face = Eigen::AngleAxisd { face_yaw, Eigen::Vector3d::UnitZ() };
 
@@ -163,12 +163,14 @@ struct RuneModel::Impl {
         }
 
         auto get_state(
-            const std::array<bool, 5>& inactive, Timestamp start_timestamp) const noexcept {
+            const std::array<bool, 5>& inactive, Timestamp start_timestamp,
+            Timestamp current_stamp) const noexcept {
             return State {
                 .x                    = posteriors_state[kX],
                 .y                    = posteriors_state[kY],
                 .z                    = posteriors_state[kZ],
                 .start_timestamp      = start_timestamp,
+                .current_timestamp    = current_stamp,
                 .rotation_speed       = sine_valid
                     ? sine_v + sine_a * std::sin(sine_phase)
                     : (use_prediction_speed ? prediction_speed : posteriors_state[kW]),
@@ -748,6 +750,7 @@ struct RuneModel::Impl {
 
         context.reset_covariance();
         init_timestamp = timestamp;
+        current_stamp  = timestamp;
         update_count   = 0;
         fitter.reset();
 
@@ -907,11 +910,14 @@ struct RuneModel::Impl {
             update_count += 1;
             context.update_count = update_count;
 
-            auto state = context.get_state(blade_inactive, init_timestamp);
+            auto state = context.get_state(blade_inactive, init_timestamp, current_stamp);
             const auto t_now =
                 std::chrono::duration<double>(current_stamp - init_timestamp).count();
 
-            if (t_now >= kFitWarmupSeconds) {
+            // 能量拟合包含大量 Eigen 优化（粗扫 + 黄金分割），无需每个校正帧执行。
+            // 降频拟合可避免样本窗口变长后单帧耗时暴涨；EKF/火控仍保持逐帧更新。
+            constexpr std::size_t kFitInterval = 5;
+            if (t_now >= kFitWarmupSeconds && (update_count % kFitInterval == 0)) {
                 fitter.push(t_now, state.rotation_angle);
 
                 auto res_linear = fitter.fit_linear();
@@ -959,7 +965,7 @@ struct RuneModel::Impl {
         if (cov(kPsi, kPsi) > kMaxCovYaw) return false;
 
         using namespace std::chrono_literals;
-        if (Clock::now() - init_timestamp < 0.1s) return false;
+        if (current_stamp - init_timestamp < 0.1s) return false;
 
         return true;
     }
@@ -1033,7 +1039,7 @@ auto RuneModel::converge() const -> bool { return pimpl->converge(); }
 auto RuneModel::diverged() const -> bool { return pimpl->diverged(); }
 
 auto RuneModel::state() const noexcept -> State {
-    return pimpl->context.get_state(pimpl->blade_inactive, pimpl->init_timestamp);
+    return pimpl->context.get_state(pimpl->blade_inactive, pimpl->init_timestamp, pimpl->current_stamp);
 }
 
 auto RuneModel::addition() const -> const Addition& { return pimpl->addition; }

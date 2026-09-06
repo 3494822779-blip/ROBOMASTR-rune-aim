@@ -150,6 +150,14 @@ int main(int argc, char** argv) {
         std::printf("[aim] %s source: %s\n", is_camera ? "camera" : "video", src.c_str());
     }
 
+    // 视频模式用固定帧率驱动 EKF，避免 GPU 推理延迟波动导致 dt 抖动掉帧。
+    // 帧率从 yaml 的 input.video_fps 读取（避免 Jetson GStreamer 的 CAP_PROP_FPS 查询干扰解码器）。
+    double video_fps = cfg.input.video_fps;
+    if (is_video) {
+        if (video_fps <= 0.0 || video_fps > 1000.0) video_fps = 30.0;
+        std::printf("[aim] video fps: %.2f\n", video_fps);
+    }
+
     // ---- 主循环 ----
     const auto window = "rune_aim";
     if (cfg.display.enabled) cv::namedWindow(window, cv::WINDOW_AUTOSIZE);
@@ -161,6 +169,11 @@ int main(int argc, char** argv) {
     double dt = 1.0 / cfg.input.hz;
     int frame_id = 0, init_count = 0, aim_count = 0, fire_count = 0;
     bool paused = false;
+    bool tracking_corrected = false;
+    // 实时显示帧率（按实际完成绘制的帧数统计，适用于 video/camera/virtual）。
+    double display_fps = 0.0;
+    int fps_frames = 0;
+    auto fps_stamp = std::chrono::steady_clock::now();
     RuneFireControl::Command last_cmd{};  // 主循环计算，可视化只读，避免重复推进火控状态机
     // Reuse per-frame containers to avoid allocator churn in the real-time loop.
     std::vector<RuneIcon> icons;
@@ -170,9 +183,15 @@ int main(int argc, char** argv) {
 
     std::future<RuneDetector::Elements> pending_detect;
     cv::Mat prev_frame;
+    double last_read_ms = 0.0;
+    double last_detect_wait_ms = 0.0;
+    double last_display_ms = 0.0;
+    double last_track_ms = 0.0;
+    auto loop_stamp = std::chrono::steady_clock::now();
 
     const auto run_frame = [&](const cv::Mat& frame, std::vector<RuneIcon>& icons,
                                 std::vector<RuneBullseye>& bullseyes, Timestamp now) {
+        tracking_corrected = false;
         // ---- 跟踪生命周期 ----
         if (!rune_inited) {
             if ((!icons.empty() || !bullseyes.empty()) && model.init(icons, bullseyes, now)) {
@@ -193,6 +212,7 @@ int main(int argc, char** argv) {
         const bool corrected = model.correct(icons, bullseyes);
         if (model.diverged()) { rune_inited = false; return; }
         if (corrected) rune_corrected_stamp = now;
+        tracking_corrected = corrected;
 
         // ---- 火控 + 诊断 ----
         const auto state = model.state();
@@ -223,10 +243,24 @@ int main(int argc, char** argv) {
     while (true) {
         if (cfg.input.max_frames > 0 && frame_id >= cfg.input.max_frames) break;
 
-        const auto now = Clock::now();
-        if (!paused && last_now != Timestamp{}) {
-            dt = std::chrono::duration<double>(now - last_now).count();
-            dt = std::clamp(dt, 0.0, 0.5);
+        // 视频模式：固定 dt = 1/fps，合成时间戳按视频帧率匀速推进，
+        //           消除 TensorRT 推理延迟波动对 EKF 的影响。
+        // 相机/虚拟模式：仍用挂钟时间。
+        Timestamp now;
+        if (is_video) {
+            dt = 1.0 / video_fps;
+            if (last_now == Timestamp{}) {
+                now = Clock::now();
+            } else {
+                now = last_now + std::chrono::duration_cast<Duration>(
+                    std::chrono::duration<double>(dt));
+            }
+        } else {
+            now = Clock::now();
+            if (!paused && last_now != Timestamp{}) {
+                dt = std::chrono::duration<double>(now - last_now).count();
+                dt = std::clamp(dt, 0.0, 0.5);
+            }
         }
         last_now = now;
 
@@ -247,7 +281,10 @@ int main(int argc, char** argv) {
             // Double-buffered pipeline: overlap TensorRT inference with EKF+fire control.
             // First iteration: no pending detection, just kick off async detect.
             if (!pending_detect.valid()) {
+                const auto read_begin = std::chrono::steady_clock::now();
                 if (!capture.read(frame)) break;
+                last_read_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - read_begin).count();
                 prev_frame = frame.clone();
                 pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
                     return detector.detect(f);
@@ -255,13 +292,19 @@ int main(int argc, char** argv) {
                 // No tracking data yet for this first frame — just grab and display.
             } else {
                 // Retrieve detection results from previous frame's async detect.
+                const auto detect_begin = std::chrono::steady_clock::now();
                 auto elements = pending_detect.get();
+                last_detect_wait_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - detect_begin).count();
                 icons = std::move(elements.icons);
                 bullseyes = std::move(elements.bullseyes);
 
                 // Kick off next frame's detection in parallel with this frame's tracking.
                 cv::Mat next_frame;
+                const auto read_begin = std::chrono::steady_clock::now();
                 bool has_next = capture.read(next_frame);
+                last_read_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - read_begin).count();
                 if (has_next) {
                     pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
                         return detector.detect(f);
@@ -270,7 +313,12 @@ int main(int argc, char** argv) {
                 frame = prev_frame;
                 if (has_next) prev_frame = next_frame;
 
-                if (!paused) run_frame(frame, icons, bullseyes, now);
+                if (!paused) {
+                    const auto track_begin = std::chrono::steady_clock::now();
+                    run_frame(frame, icons, bullseyes, now);
+                    last_track_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - track_begin).count();
+                }
 
                 if (!has_next) {
                     // Process display for last frame then exit.
@@ -294,6 +342,7 @@ int main(int argc, char** argv) {
 
         // ---- 可视化（统一 draw 层）----
         if (cfg.display.enabled) {
+            const auto display_begin = std::chrono::steady_clock::now();
             cv::Mat display = frame.clone();
             debug::DrawOptions opt{
                 .keypoints = cfg.display.keypoints,
@@ -304,17 +353,39 @@ int main(int argc, char** argv) {
             if (opt.keypoints) debug::draw_detection(display, icons, bullseyes);
             if (rune_inited) {
                 const auto& cmd = last_cmd;  // 复用主循环结果，不重复调用 fire.update
-                if (opt.aimpoint) {
+                if (opt.aimpoint && tracking_corrected) {
                     debug::draw_aimpoint(display, model.state(),
                         cfg.fire.algorithmic_delay + cfg.fire.shoot_delay + cmd.fly_time, cfg.camera.matrix);
                 }
                 if (opt.state_text || opt.error_text) debug::draw_status(display, cmd, diag.stats(), opt);
             }
+            // 每约半秒更新一次，避免瞬时值抖动；文字始终显示在左上角。
+            ++fps_frames;
+            const auto fps_now = std::chrono::steady_clock::now();
+            const double fps_elapsed = std::chrono::duration<double>(fps_now - fps_stamp).count();
+            if (fps_elapsed >= 0.5) {
+                display_fps = static_cast<double>(fps_frames) / fps_elapsed;
+                fps_frames = 0;
+                fps_stamp = fps_now;
+            }
+            cv::putText(display, cv::format("FPS: %.1f", display_fps), cv::Point(20, 115),
+                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
             cv::imshow(window, display);
             const auto key = cv::waitKey(1);
+            last_display_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - display_begin).count();
             if (key == 'q' || key == 27) break;
             if (key == ' ') paused = !paused;
             if (key == 's') cv::imwrite(cv::format("shot_%04d.png", frame_id), display);
+        }
+        if (is_video && frame_id > 0 && frame_id % 30 == 0) {
+            const auto loop_now = std::chrono::steady_clock::now();
+            const double loop_ms = std::chrono::duration<double, std::milli>(loop_now - loop_stamp).count() / 30.0;
+            loop_stamp = loop_now;
+            std::printf("[timing] frame %d read=%.1fms detect_wait=%.1fms display=%.1fms\n",
+                frame_id, last_read_ms, last_detect_wait_ms, last_display_ms);
+            std::printf("[timing] track=%.1fms\n", last_track_ms);
+            std::printf("[timing] avg_loop=%.1fms (%.1f FPS)\n", loop_ms, loop_ms > 0.0 ? 1000.0 / loop_ms : 0.0);
         }
         ++frame_id;
         if (is_virtual && !paused) {

@@ -9,6 +9,7 @@ input:                    # —— 数据源 ——
   source: data/rune_test_h264.mp4   # video: 视频路径；camera: 设备索引 "0"
   max_frames: 0           # 0 = 不限帧
   hz: 200                 # virtual 模式仿真帧率 Hz
+  video_fps: 0            # video 模式帧率（0 = 默认 30；实际值用 ffprobe 查看）
 
 camera:                   # —— 相机标定（virtual 模式可用演示内参）——
   matrix: [1400, 0, 720, 0, 1400, 540, 0, 0, 1]   # 内参 3×3 行优先（fx 0 cx 0 fy cy 0 0 1）
@@ -79,7 +80,7 @@ diag:                     # —— 预测误差诊断（RuneDiagnostics）——
 
 display:                  # —— 可视化调试开关 ——
   enabled: true           # false = 纯终端运行（无人值守/性能测试）
-  keypoints: true         # 画检测关键点/符叶/R 标
+  keypoints: false         # 画检测关键点/符叶/R 标
   aimpoint: true          # 画命中时刻预瞄点
-  state_text: true        # 画火控状态文字
-  error_text: true        # 画诊断误差文字
+  state_text: false        # 画火控状态文字
+  error_text: false        # 画诊断误差文字

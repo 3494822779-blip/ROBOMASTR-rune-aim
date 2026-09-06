@@ -17,6 +17,7 @@ struct InputConfig {
     std::string source;            // video: 视频路径 / camera: 设备索引 "0"
     int max_frames = 0;            // 0 = 不限
     double hz = 200.0;             // virtual 模式仿真帧率
+    double video_fps = 0.0;        // video 模式帧率（0 = 默认 30）
 };
 
 struct CameraConfig {
