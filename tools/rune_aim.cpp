@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
     if (!cli.source.empty()) cfg.input.source = cli.source;
     if (cli.max_frames >= 0) cfg.input.max_frames = cli.max_frames;
     if (cli.no_display) cfg.display.enabled = false;
+    cfg::print_config(cfg);
 
     const bool is_virtual = cfg.input.mode == "virtual";
     const bool is_video   = cfg.input.mode == "video";
@@ -170,6 +171,7 @@ int main(int argc, char** argv) {
     int frame_id = 0, init_count = 0, aim_count = 0, fire_count = 0;
     bool paused = false;
     bool tracking_corrected = false;
+    bool last_fire = false;
     // 实时显示帧率（按实际完成绘制的帧数统计，适用于 video/camera/virtual）。
     double display_fps = 0.0;
     int fps_frames = 0;
@@ -183,11 +185,6 @@ int main(int argc, char** argv) {
 
     std::future<RuneDetector::Elements> pending_detect;
     cv::Mat prev_frame;
-    double last_read_ms = 0.0;
-    double last_detect_wait_ms = 0.0;
-    double last_display_ms = 0.0;
-    double last_track_ms = 0.0;
-    auto loop_stamp = std::chrono::steady_clock::now();
 
     const auto run_frame = [&](const cv::Mat& frame, std::vector<RuneIcon>& icons,
                                 std::vector<RuneBullseye>& bullseyes, Timestamp now) {
@@ -233,11 +230,12 @@ int main(int argc, char** argv) {
         }
 
         // ---- 终端输出 ----
-        if (cmd.found && (frame_id % 30 == 0)) {
+        if (cmd.found && (frame_id % 30 == 0 || cmd.fire != last_fire)) {
             std::printf("frame %d | %s | yaw=%.2f pitch=%.2f fly=%.3fs | fire=%d | %s\n", frame_id,
                 cmd.state_name(), cmd.yaw, cmd.pitch, cmd.fly_time, static_cast<int>(cmd.fire),
                 cmd.reason.c_str());
         }
+        last_fire = cmd.fire;
     };
 
     while (true) {
@@ -281,10 +279,7 @@ int main(int argc, char** argv) {
             // Double-buffered pipeline: overlap TensorRT inference with EKF+fire control.
             // First iteration: no pending detection, just kick off async detect.
             if (!pending_detect.valid()) {
-                const auto read_begin = std::chrono::steady_clock::now();
                 if (!capture.read(frame)) break;
-                last_read_ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - read_begin).count();
                 prev_frame = frame.clone();
                 pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
                     return detector.detect(f);
@@ -292,19 +287,13 @@ int main(int argc, char** argv) {
                 // No tracking data yet for this first frame — just grab and display.
             } else {
                 // Retrieve detection results from previous frame's async detect.
-                const auto detect_begin = std::chrono::steady_clock::now();
                 auto elements = pending_detect.get();
-                last_detect_wait_ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - detect_begin).count();
                 icons = std::move(elements.icons);
                 bullseyes = std::move(elements.bullseyes);
 
                 // Kick off next frame's detection in parallel with this frame's tracking.
                 cv::Mat next_frame;
-                const auto read_begin = std::chrono::steady_clock::now();
                 bool has_next = capture.read(next_frame);
-                last_read_ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - read_begin).count();
                 if (has_next) {
                     pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
                         return detector.detect(f);
@@ -314,10 +303,7 @@ int main(int argc, char** argv) {
                 if (has_next) prev_frame = next_frame;
 
                 if (!paused) {
-                    const auto track_begin = std::chrono::steady_clock::now();
                     run_frame(frame, icons, bullseyes, now);
-                    last_track_ms = std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - track_begin).count();
                 }
 
                 if (!has_next) {
@@ -342,7 +328,6 @@ int main(int argc, char** argv) {
 
         // ---- 可视化（统一 draw 层）----
         if (cfg.display.enabled) {
-            const auto display_begin = std::chrono::steady_clock::now();
             cv::Mat display = frame.clone();
             debug::DrawOptions opt{
                 .keypoints = cfg.display.keypoints,
@@ -372,20 +357,9 @@ int main(int argc, char** argv) {
                 cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
             cv::imshow(window, display);
             const auto key = cv::waitKey(1);
-            last_display_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - display_begin).count();
             if (key == 'q' || key == 27) break;
             if (key == ' ') paused = !paused;
             if (key == 's') cv::imwrite(cv::format("shot_%04d.png", frame_id), display);
-        }
-        if (is_video && frame_id > 0 && frame_id % 30 == 0) {
-            const auto loop_now = std::chrono::steady_clock::now();
-            const double loop_ms = std::chrono::duration<double, std::milli>(loop_now - loop_stamp).count() / 30.0;
-            loop_stamp = loop_now;
-            std::printf("[timing] frame %d read=%.1fms detect_wait=%.1fms display=%.1fms\n",
-                frame_id, last_read_ms, last_detect_wait_ms, last_display_ms);
-            std::printf("[timing] track=%.1fms\n", last_track_ms);
-            std::printf("[timing] avg_loop=%.1fms (%.1f FPS)\n", loop_ms, loop_ms > 0.0 ? 1000.0 / loop_ms : 0.0);
         }
         ++frame_id;
         if (is_virtual && !paused) {

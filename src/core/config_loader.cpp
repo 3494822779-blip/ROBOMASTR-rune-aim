@@ -192,19 +192,24 @@ AppConfig load_config(const std::string& yaml_path) {
         cfg.fire.max_iterate = 1;
     }
 
-    // ---- 打印实际生效参数 ----
-    std::printf("[config] input: mode=%s source=%s max_frames=%d\n", cfg.input.mode.c_str(),
-        cfg.input.source.c_str(), cfg.input.max_frames);
-    std::printf("[config] camera: fx=%.1f fy=%.1f cx=%.1f cy=%.1f\n", cfg.camera.matrix[0],
-        cfg.camera.matrix[4], cfg.camera.matrix[2], cfg.camera.matrix[5]);
-    std::printf("[config] detect: engine=%s score=%.2f keypoint=%.2f center_dist=%.1f\n",
+    return cfg;
+}
+
+void print_config(const AppConfig& cfg) {
+    const auto on_off = [](bool enabled) { return enabled ? "on" : "off"; };
+    std::printf("[config] effective input: mode=%s source=%s max_frames=%d\n",
+        cfg.input.mode.c_str(), cfg.input.source.c_str(), cfg.input.max_frames);
+    std::printf("[config] effective camera: fx=%.1f fy=%.1f cx=%.1f cy=%.1f\n",
+        cfg.camera.matrix[0], cfg.camera.matrix[4], cfg.camera.matrix[2], cfg.camera.matrix[5]);
+    std::printf("[config] effective detect: engine=%s score=%.2f keypoint=%.2f center_dist=%.1f\n",
         cfg.detect.engine.c_str(), cfg.detect.score_threshold, cfg.detect.keypoint_threshold,
         cfg.detect.center_distance);
-    std::printf("[config] fire: bullet_speed=%.2f shoot_delay=%.3f algo_delay=%.3f\n",
+    std::printf("[config] effective fire: bullet_speed=%.2f shoot_delay=%.3f algo_delay=%.3f\n",
         cfg.fire.bullet_speed, cfg.fire.shoot_delay, cfg.fire.algorithmic_delay);
-    std::printf("[config] display: %s\n", cfg.display.enabled ? "on" : "off");
-
-    return cfg;
+    std::printf("[config] effective display: enabled=%s keypoints=%s aimpoint=%s "
+                "state_text=%s error_text=%s\n",
+        on_off(cfg.display.enabled), on_off(cfg.display.keypoints), on_off(cfg.display.aimpoint),
+        on_off(cfg.display.state_text), on_off(cfg.display.error_text));
 }
 
 }  // namespace rmcs::cfg

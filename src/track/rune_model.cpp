@@ -51,8 +51,8 @@ auto RuneModel::State::get_direction() const -> Point3d { return Point3d { x, y,
 auto RuneModel::State::get_rotation_speed() const -> double { return rotation_speed; }
 
 auto RuneModel::State::get_aimpoints() const -> AimPoints {
-    const auto converge_duration = std::chrono::seconds { sine_valid ? 6 : 3 };
-    if (current_timestamp - start_timestamp < converge_duration) return { };
+    if (!converged) return { };
+    if (current_timestamp - start_timestamp < std::chrono::seconds { 1 }) return { };
 
     const auto r_face = Eigen::AngleAxisd { face_yaw, Eigen::Vector3d::UnitZ() };
 
@@ -164,7 +164,7 @@ struct RuneModel::Impl {
 
         auto get_state(
             const std::array<bool, 5>& inactive, Timestamp start_timestamp,
-            Timestamp current_stamp) const noexcept {
+            Timestamp current_stamp, bool converged) const noexcept {
             return State {
                 .x                    = posteriors_state[kX],
                 .y                    = posteriors_state[kY],
@@ -177,6 +177,7 @@ struct RuneModel::Impl {
                 .rotation_angle       = posteriors_state[kA],
                 .face_yaw             = posteriors_state[kPsi],
                 .inactive             = inactive,
+                .converged            = converged,
                 .use_prediction_speed = use_prediction_speed,
                 .prediction_cost      = sine_valid ? sine_cost : prediction_cost,
                 .sine_C               = sine_C,
@@ -910,7 +911,8 @@ struct RuneModel::Impl {
             update_count += 1;
             context.update_count = update_count;
 
-            auto state = context.get_state(blade_inactive, init_timestamp, current_stamp);
+            auto state = context.get_state(
+                blade_inactive, init_timestamp, current_stamp, converge());
             const auto t_now =
                 std::chrono::duration<double>(current_stamp - init_timestamp).count();
 
@@ -951,11 +953,11 @@ struct RuneModel::Impl {
     // ===== Convergence / Divergence =====
 
     // P1-3 升级：恢复协方差收敛判据（此前被注释，恒返回 true）。
-    // 条件：更新次数 ≥ 10 且 位置协方差 < 1.0 m² 且 符面朝向协方差 < 0.002 rad² 且初始化后 ≥ 0.1s。
+    // 条件：更新次数 ≥ 10 且 位置协方差 < 1.0 m² 且 符面朝向协方差 < 0.005 rad² 且初始化后 ≥ 0.1s。
     auto converge() const -> bool {
         constexpr auto kMinUpdate = std::size_t { 10 };
         constexpr auto kMaxCovXY  = 1.0;
-        constexpr auto kMaxCovYaw = 0.002;
+        constexpr auto kMaxCovYaw = 0.005;
 
         if (update_count < kMinUpdate) return false;
 
@@ -1039,7 +1041,8 @@ auto RuneModel::converge() const -> bool { return pimpl->converge(); }
 auto RuneModel::diverged() const -> bool { return pimpl->diverged(); }
 
 auto RuneModel::state() const noexcept -> State {
-    return pimpl->context.get_state(pimpl->blade_inactive, pimpl->init_timestamp, pimpl->current_stamp);
+    return pimpl->context.get_state(
+        pimpl->blade_inactive, pimpl->init_timestamp, pimpl->current_stamp, pimpl->converge());
 }
 
 auto RuneModel::addition() const -> const Addition& { return pimpl->addition; }

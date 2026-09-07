@@ -29,6 +29,7 @@ public:
         double face_yaw = 0;
 
         std::array<bool, 5> inactive;
+        bool converged = false;
 
         bool use_prediction_speed = false;
         double prediction_cost    = 0.0;

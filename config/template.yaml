@@ -80,7 +80,7 @@ diag:                     # —— 预测误差诊断（RuneDiagnostics）——
 
 display:                  # —— 可视化调试开关 ——
   enabled: true           # false = 纯终端运行（无人值守/性能测试）
-  keypoints: false         # 画检测关键点/符叶/R 标
+  keypoints: true         # 画检测关键点/符叶/R 标
   aimpoint: true          # 画命中时刻预瞄点
-  state_text: false        # 画火控状态文字
-  error_text: false        # 画诊断误差文字
+  state_text: true        # 画火控状态文字
+  error_text: true        # 画诊断误差文字

@@ -73,7 +73,10 @@ struct AppConfig {
     DisplayConfig display;
 };
 
-// 从 yaml 加载全部配置（相对路径基于项目根解析）；打印实际生效参数。
+// 从 yaml 加载全部配置（相对路径基于项目根解析）。
 AppConfig load_config(const std::string& yaml_path);
+
+// 在 yaml 与命令行覆盖均应用后打印最终生效参数。
+void print_config(const AppConfig& config);
 
 }  // namespace rmcs::cfg

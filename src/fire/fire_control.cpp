@@ -191,7 +191,10 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     im.last_pitch = pitch;
 
     auto cmd          = Command { };
-    cmd.found         = fresh && ballistic_ok;
+    // A detector miss does not immediately invalidate the EKF prediction.
+    // Keep the target usable within data_life; prolonged misses are handled
+    // by the recovery path below.
+    cmd.found         = ballistic_ok && im.data_age <= config_.data_life;
     cmd.fly_time      = fly_time;
     cmd.yaw           = yaw;
     cmd.pitch         = pitch;
@@ -199,15 +202,16 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     cmd.ff_a          = ff_a;
 
     // ---- 数据过期：平滑回符心 ----
-    if (!cmd.found) {
+    if (!ballistic_ok) {
         im.state       = State::LOST;
         im.firing_time = 0.0;
         cmd.state      = State::LOST;
-        cmd.reason     = "no fresh target or ballistic failed";
+        cmd.reason     = "ballistic failed";
         return cmd;
     }
 
     if (im.data_age > config_.data_life) {
+        cmd.found = false;
         if (!im.recovering) {
             im.begin_recover(state);
             im.firing_time = 0.0;
@@ -274,6 +278,8 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
         cmd.fire       = true;
         im.state       = State::FIRING;
         im.firing_time = dt;
+        cmd.state      = State::FIRING;
+        cmd.reason     = "firing window started";
     } else if (im.state == State::FIRING && has_blade && pitch_ok && time_ok) {
         cmd.fire = true;
         im.firing_time += dt;
