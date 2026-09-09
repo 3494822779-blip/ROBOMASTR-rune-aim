@@ -15,6 +15,8 @@ camera:                   # —— 相机标定（virtual 模式可用演示内�
   matrix: [1400, 0, 720, 0, 1400, 540, 0, 0, 1]   # 内参 3×3 行优先（fx 0 cx 0 fy cy 0 0 1）
   distortion: [0, 0, 0, 0, 0]                     # 畸变 k1 k2 p1 p2 k3
   transform: [0, 0, 0, 1, 0, 0, 0]                # 相机→Odom 外参：t(x,y,z) + q(x,y,z,w)
+  image_width: 1440       # 画幅宽（须与 cx 对应）；virtual 模式据此裁掉画幅外的观测
+  image_height: 1080      # 画幅高（须与 cy 对应）
 
 detect:                   # —— 检测（RuneDetector）——
   engine: model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine   # Tens#orRT 引擎路径
@@ -72,6 +74,15 @@ virtual_rune:             # —— 虚拟符（virtual 模式）——
   face_yaw: 0.0           # 符面朝向
   pixel_noise_px: 0.0     # 关键点高斯噪声 σ px（退化模拟）
   dropout_prob: 0.0       # 每片符叶漏检概率 0~1（退化模拟）
+  gimbal:                 # —— 云台运动仿真（无真机时验证"外参随云台变化"这条链路）——
+    enable: false         # true = 相机外参随时间摆动，而非固定在 camera.transform
+    yaw_amp: 10.0         # yaw 摆幅 deg（绕 Odom +z）
+    yaw_freq: 0.30        # yaw 频率 Hz
+    pitch_amp: 3.0        # pitch 摆幅 deg（绕 Odom +y）
+    pitch_freq: 0.17      # pitch 频率 Hz
+    transform_delay: 0.0  # 喂给 EKF 的外参滞后 s（模拟 IMU 回读延迟）
+    transform_noise: 0.0  # 喂给 EKF 的外参姿态噪声 σ deg（模拟标定/量测误差）
+    seed: 7               # 噪声随机种子
 
 diag:                     # —— 预测误差诊断（RuneDiagnostics）——
   match_tolerance_ms: 1.0 # 预测/实测配对容差 ms

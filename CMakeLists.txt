@@ -9,6 +9,7 @@ option(ENABLE_SANITIZERS "Enable ASan/UBSan for host C++ code" OFF)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d ximgproc videoio highgui)
 find_package(Eigen3 REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+find_package(Threads REQUIRED)
 # yaml-cpp：系统 config 有时不可用，手动定义 imported target 最稳
 find_library(YAML_CPP_LIB NAMES yaml-cpp REQUIRED)
 if(NOT TARGET yaml-cpp::yaml-cpp)
@@ -26,6 +27,7 @@ set_source_files_properties(src/track/rune_model.cpp PROPERTIES OBJECT_OUTPUT_NA
 add_library(rune_core STATIC
   # ---- 检测 ----
   src/detect/detector.cpp
+  src/detect/detect_worker.cpp
   src/detect/gpu_pipeline.cu
   # ---- 跟踪 ----
   src/track/rune_model.cpp
@@ -41,12 +43,13 @@ add_library(rune_core STATIC
   src/debug/draw.cpp
   # ---- 核心 ----
   src/core/camera.cpp
+  src/core/frame_source.cpp
   src/core/reprojection.cpp
   src/core/rune_pnp.cpp
   src/core/config_loader.cpp
 )
 target_include_directories(rune_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rune_core PUBLIC ${OpenCV_LIBS} Eigen3::Eigen CUDA::cudart nvinfer yaml-cpp::yaml-cpp)
+target_link_libraries(rune_core PUBLIC ${OpenCV_LIBS} Eigen3::Eigen CUDA::cudart nvinfer yaml-cpp::yaml-cpp Threads::Threads)
 target_compile_options(rune_core PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>
   $<$<COMPILE_LANGUAGE:CUDA>:--Wno-deprecated-gpu-targets>

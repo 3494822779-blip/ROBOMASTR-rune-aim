@@ -30,6 +30,13 @@ auto get_array(const YAML::Node& node, const char* key, const std::array<T, N>& 
     }
 }
 
+// 安全取子节点：父节点缺失时返回空节点。直接对 yaml-cpp 的 zombie 节点用
+// operator[] 会抛 InvalidNode，所以嵌套段必须先判父节点。
+auto child(const YAML::Node& node, const char* key) -> YAML::Node {
+    if (node && node[key]) return node[key];
+    return YAML::Node{};
+}
+
 }  // namespace
 
 namespace {
@@ -48,6 +55,8 @@ auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
     const auto camera = root["camera"];
     cfg.camera.matrix      = get_array(camera, "matrix", cfg.camera.matrix);
     cfg.camera.distortion  = get_array(camera, "distortion", cfg.camera.distortion);
+    cfg.camera.image_width  = get_or(camera, "image_width", cfg.camera.image_width);
+    cfg.camera.image_height = get_or(camera, "image_height", cfg.camera.image_height);
     if (camera && camera["transform"]) {
         try {
             const auto t = camera["transform"].as<std::array<double, 7>>();
@@ -116,6 +125,17 @@ auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
     cfg.virtual_rune.face_yaw       = get_or(v, "face_yaw", cfg.virtual_rune.face_yaw);
     cfg.virtual_rune.pixel_noise_px = get_or(v, "pixel_noise_px", cfg.virtual_rune.pixel_noise_px);
     cfg.virtual_rune.dropout_prob   = get_or(v, "dropout_prob", cfg.virtual_rune.dropout_prob);
+
+    auto& gim = cfg.virtual_rune.gimbal;
+    const auto g = child(v, "gimbal");
+    gim.enable          = get_or(g, "enable", gim.enable);
+    gim.yaw_amp         = get_or(g, "yaw_amp", gim.yaw_amp);
+    gim.yaw_freq        = get_or(g, "yaw_freq", gim.yaw_freq);
+    gim.pitch_amp       = get_or(g, "pitch_amp", gim.pitch_amp);
+    gim.pitch_freq      = get_or(g, "pitch_freq", gim.pitch_freq);
+    gim.transform_delay = get_or(g, "transform_delay", gim.transform_delay);
+    gim.transform_noise = get_or(g, "transform_noise", gim.transform_noise);
+    gim.seed            = get_or(g, "seed", gim.seed);
 
     // ---- diag ----
     const auto diag = root["diag"];
@@ -187,6 +207,12 @@ AppConfig load_config(const std::string& yaml_path) {
     clamp_report("fire.max_fly_time", cfg.fire.max_fly_time, 0.001, 10.0);
     clamp_report("fire.recover_time", cfg.fire.recover_time, 0.001, 10.0);
     clamp_report("virtual_rune.dropout_prob", cfg.virtual_rune.dropout_prob, 0.0, 1.0);
+    clamp_report("camera.image_width", cfg.camera.image_width, 1, 100000);
+    clamp_report("camera.image_height", cfg.camera.image_height, 1, 100000);
+    clamp_report("virtual_rune.gimbal.transform_delay",
+        cfg.virtual_rune.gimbal.transform_delay, 0.0, 1.0);
+    clamp_report("virtual_rune.gimbal.transform_noise",
+        cfg.virtual_rune.gimbal.transform_noise, 0.0, 90.0);
     if (cfg.fire.max_iterate < 1) {
         std::fprintf(stderr, "[config] fire.max_iterate invalid; clamped to 1\n");
         cfg.fire.max_iterate = 1;
@@ -199,13 +225,21 @@ void print_config(const AppConfig& cfg) {
     const auto on_off = [](bool enabled) { return enabled ? "on" : "off"; };
     std::printf("[config] effective input: mode=%s source=%s max_frames=%d\n",
         cfg.input.mode.c_str(), cfg.input.source.c_str(), cfg.input.max_frames);
-    std::printf("[config] effective camera: fx=%.1f fy=%.1f cx=%.1f cy=%.1f\n",
-        cfg.camera.matrix[0], cfg.camera.matrix[4], cfg.camera.matrix[2], cfg.camera.matrix[5]);
+    std::printf("[config] effective camera: fx=%.1f fy=%.1f cx=%.1f cy=%.1f image=%dx%d\n",
+        cfg.camera.matrix[0], cfg.camera.matrix[4], cfg.camera.matrix[2], cfg.camera.matrix[5],
+        cfg.camera.image_width, cfg.camera.image_height);
     std::printf("[config] effective detect: engine=%s score=%.2f keypoint=%.2f center_dist=%.1f\n",
         cfg.detect.engine.c_str(), cfg.detect.score_threshold, cfg.detect.keypoint_threshold,
         cfg.detect.center_distance);
     std::printf("[config] effective fire: bullet_speed=%.2f shoot_delay=%.3f algo_delay=%.3f\n",
         cfg.fire.bullet_speed, cfg.fire.shoot_delay, cfg.fire.algorithmic_delay);
+    const auto& gim = cfg.virtual_rune.gimbal;
+    if (gim.enable) {
+        std::printf("[config] effective gimbal: yaw=%.1fdeg@%.2fHz pitch=%.1fdeg@%.2fHz "
+                    "transform_delay=%.3fs transform_noise=%.3fdeg\n",
+            gim.yaw_amp, gim.yaw_freq, gim.pitch_amp, gim.pitch_freq,
+            gim.transform_delay, gim.transform_noise);
+    }
     std::printf("[config] effective display: enabled=%s keypoints=%s aimpoint=%s "
                 "state_text=%s error_text=%s\n",
         on_off(cfg.display.enabled), on_off(cfg.display.keypoints), on_off(cfg.display.aimpoint),

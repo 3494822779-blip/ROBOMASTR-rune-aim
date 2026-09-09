@@ -23,8 +23,12 @@
 | `matrix` | 1400 演示内参 | 内参 3×3 行优先：`[fx, 0, cx, 0, fy, cy, 0, 0, 1]`。**实车必换标定值** |
 | `distortion` | 全 0 | 畸变系数 `[k1, k2, p1, p2, k3]` |
 | `transform` | 单位 | 相机→Odom 外参：`[t_x, t_y, t_z, q_x, q_y, q_z, q_w]`（平移 + 四元数）。真机来自标定/TF |
+| `image_width` | 1440 | 画幅宽（px），须与 `cx` 对应 |
+| `image_height` | 1080 | 画幅高（px），须与 `cy` 对应 |
 
 > 影响：PnP 3D 解算与预瞄点投影。内参错 → 距离错；外参错 → 世界坐标整体偏。
+> `image_width/height` 仅 virtual 模式使用：虚拟符的投影只判断点在相机前方，不判画幅，
+> 据此裁掉落在画幅外的观测，对齐真实检测器"5 个关键点全在画幅内"的判据。
 
 ## 3. detect —— 检测（RuneDetector::Config）
 
@@ -88,6 +92,22 @@
 | `dropout_prob` | 0.0 | 每片符叶独立漏检/遮挡概率 0~1，模拟遮挡 |
 
 > 用途：无 GPU 离线调参。加噪声/漏检评估算法鲁棒性（见 README 退化测试表）。
+
+### 6.1 virtual_rune.gimbal —— 云台运动仿真
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| `enable` | false | true = 相机外参随时间摆动，而非固定为 `camera.transform` |
+| `yaw_amp` / `yaw_freq` | 10.0 deg / 0.30 Hz | yaw 摆幅与频率（绕 Odom +z） |
+| `pitch_amp` / `pitch_freq` | 3.0 deg / 0.17 Hz | pitch 摆幅与频率（绕 Odom +y） |
+| `transform_delay` | 0.0 | 喂给 EKF 的外参滞后（s），模拟 IMU 回读延迟 |
+| `transform_noise` | 0.0 | 喂给 EKF 的外参姿态噪声 σ（deg），模拟标定/量测误差 |
+| `seed` | 7 | 噪声随机种子 |
+
+> 用途：真机上 `camera.transform` 由 IMU 回读驱动、每帧变化，但工具里一直是常量，
+> 这条链路在装相机之前无法验证。开启后 VirtualRune 用**真实**外参生成观测，
+> RuneModel 收到的是**滞后 + 带噪**的那一份，两者之差即真机上的外参误差来源。
+> 场景文件：`config/rune_gimbal_virtual.yaml`。
 
 ## 7. diag —— 诊断（RuneDiagnostics::Config）
 

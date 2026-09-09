@@ -10,27 +10,32 @@
 //
 // 链路：数据源(视频/虚拟符/相机) → RuneDetector(视频/相机) 或 VirtualRune
 //       → RuneModel(EKF 跟踪) → RuneFireControl(预瞄+开火) → RuneDiagnostics(误差)
+#include "core/angle.hpp"
 #include "core/config_loader.hpp"
+#include "core/frame_source.hpp"
 #include "debug/draw.hpp"
+#include "detect/detect_worker.hpp"
 #include "detect/detector.hpp"
 #include "diag/diagnostics.hpp"
 #include "fire/fire_control.hpp"
 #include "track/rune_model.hpp"
 #include "track/virtual_rune.hpp"
 
+#include <eigen3/Eigen/Geometry>
+
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/videoio.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <future>
+#include <memory>
 #include <numbers>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 
@@ -70,6 +75,31 @@ auto parse_cli(int argc, char** argv) -> Cli {
         }
     }
     return cli;
+}
+
+// 云台运动仿真：在标定的基准外参上叠加 yaw(绕 Odom +z) / pitch(绕 Odom +y) 正弦摆动。
+// 相机绕自身位置转动，平移不变；返回值与 camera.transform 同义（相机→Odom）。
+auto gimbal_pose(const cfg::AppConfig& cfg, double t) -> Transform {
+    const auto& g = cfg.virtual_rune.gimbal;
+    const auto yaw = util::deg2rad(g.yaw_amp)
+                   * std::sin(2.0 * std::numbers::pi * g.yaw_freq * t);
+    const auto pitch = util::deg2rad(g.pitch_amp)
+                     * std::sin(2.0 * std::numbers::pi * g.pitch_freq * t);
+    const auto q_base = cfg.camera.orientation.make<Eigen::Quaterniond>();
+    const Eigen::Quaterniond q = Eigen::AngleAxisd { yaw, Eigen::Vector3d::UnitZ() }
+                               * Eigen::AngleAxisd { pitch, Eigen::Vector3d::UnitY() } * q_base;
+    return Transform { cfg.camera.translation, Orientation { q } };
+}
+
+// 给外参叠加高斯姿态噪声，模拟真机的 IMU 量测 / 外参标定误差。
+auto perturb_pose(const Transform& pose, double sigma_deg, std::mt19937& gen) -> Transform {
+    if (sigma_deg <= 0.0) return pose;
+    std::normal_distribution<double> noise(0.0, util::deg2rad(sigma_deg));
+    const auto q_base = pose.orientation.make<Eigen::Quaterniond>();
+    const Eigen::Quaterniond q = Eigen::AngleAxisd { noise(gen), Eigen::Vector3d::UnitZ() }
+                               * Eigen::AngleAxisd { noise(gen), Eigen::Vector3d::UnitY() }
+                               * q_base;
+    return Transform { pose.translation, Orientation { q } };
 }
 
 }  // namespace
@@ -122,7 +152,7 @@ int main(int argc, char** argv) {
 
     // ---- 数据源 ----
     std::optional<VirtualRuneModel> virtual_rune;
-    cv::VideoCapture capture;
+    std::unique_ptr<FrameSource> source;
     if (is_virtual) {
         VirtualRuneModel::Config vcfg;
         vcfg.enable = true;
@@ -143,20 +173,17 @@ int main(int argc, char** argv) {
             vcfg.large ? "LARGE" : "SMALL");
     } else {
         const std::string src = cfg.input.source.empty() ? "data/rune_test_h264.mp4" : cfg.input.source;
-        const bool opened = is_camera ? capture.open(std::stoi(src)) : capture.open(src);
-        if (!opened) {
+        // 视频模式的合成帧率从 yaml 的 input.video_fps 读取（避免 Jetson GStreamer 的
+        // CAP_PROP_FPS 查询干扰解码器）；0 或越界时由 FrameSource 回退到 30。
+        double video_fps = cfg.input.video_fps;
+        if (video_fps <= 0.0 || video_fps > 1000.0) video_fps = 30.0;
+        source = is_camera ? make_camera_source(src) : make_video_source(src, video_fps);
+        if (!source) {
             std::fprintf(stderr, "无法打开数据源: %s\n", src.c_str());
             return 4;
         }
-        std::printf("[aim] %s source: %s\n", is_camera ? "camera" : "video", src.c_str());
-    }
-
-    // 视频模式用固定帧率驱动 EKF，避免 GPU 推理延迟波动导致 dt 抖动掉帧。
-    // 帧率从 yaml 的 input.video_fps 读取（避免 Jetson GStreamer 的 CAP_PROP_FPS 查询干扰解码器）。
-    double video_fps = cfg.input.video_fps;
-    if (is_video) {
-        if (video_fps <= 0.0 || video_fps > 1000.0) video_fps = 30.0;
-        std::printf("[aim] video fps: %.2f\n", video_fps);
+        std::printf("[aim] source: %s%s\n", source->name().c_str(),
+            is_video ? cv::format(" (fps %.2f)", video_fps).c_str() : "");
     }
 
     // ---- 主循环 ----
@@ -183,12 +210,23 @@ int main(int argc, char** argv) {
     icons.reserve(32);
     bullseyes.reserve(32);
 
-    std::future<RuneDetector::Elements> pending_detect;
-    cv::Mat prev_frame;
+    std::optional<DetectWorker> detect_worker;
+    if (!is_virtual) detect_worker.emplace(detector);
+    bool pipeline_primed = false;
 
-    const auto run_frame = [&](const cv::Mat& frame, std::vector<RuneIcon>& icons,
+    // 喂给 RuneModel 的相机外参。静止相机下恒等于标定值；云台运动仿真下每帧刷新，
+    // 且可带上回读滞后与量测噪声（真机上这个值来自 IMU 回读）。
+    const auto& gimbal = cfg.virtual_rune.gimbal;
+    Transform model_pose = cfg.camera.transform();
+    std::mt19937 gimbal_gen { gimbal.seed };
+    Timestamp sim_start{};
+
+    const auto run_frame = [&](std::vector<RuneIcon>& icons,
                                 std::vector<RuneBullseye>& bullseyes, Timestamp now) {
         tracking_corrected = false;
+        // 外参每帧刷新。注意必须放在 init 之前：云台运动下 init() 也要用当前帧的外参，
+        // 此前只在 rune_inited 之后更新，静止相机看不出问题，一旦外参时变就会用错。
+        model.update_transform(model_pose);
         // ---- 跟踪生命周期 ----
         if (!rune_inited) {
             if ((!icons.empty() || !bullseyes.empty()) && model.init(icons, bullseyes, now)) {
@@ -203,7 +241,6 @@ int main(int argc, char** argv) {
             rune_inited = false;
             return;
         }
-        model.update_transform(cfg.camera.transform());
         model.predict(dt, now);
         rune_stamp = now;
         const bool corrected = model.correct(icons, bullseyes);
@@ -241,93 +278,86 @@ int main(int argc, char** argv) {
     while (true) {
         if (cfg.input.max_frames > 0 && frame_id >= cfg.input.max_frames) break;
 
-        // 视频模式：固定 dt = 1/fps，合成时间戳按视频帧率匀速推进，
-        //           消除 TensorRT 推理延迟波动对 EKF 的影响。
-        // 相机/虚拟模式：仍用挂钟时间。
-        Timestamp now;
-        if (is_video) {
-            dt = 1.0 / video_fps;
-            if (last_now == Timestamp{}) {
-                now = Clock::now();
-            } else {
-                now = last_now + std::chrono::duration_cast<Duration>(
-                    std::chrono::duration<double>(dt));
-            }
-        } else {
-            now = Clock::now();
-            if (!paused && last_now != Timestamp{}) {
-                dt = std::chrono::duration<double>(now - last_now).count();
-                dt = std::clamp(dt, 0.0, 0.5);
-            }
-        }
-        last_now = now;
-
-        cv::Mat frame;
+        // 每帧的时间戳由各分支确定：虚拟模式用挂钟，video/camera 用帧**自带的采集时刻**。
+        // 后者是本次改动的要点——此前在循环顶部取 Clock::now()，而流水线当轮处理的是
+        // 上一轮采集的帧，观测被贴上晚一个帧周期的时间戳，EKF 状态因此系统性滞后。
+        Timestamp now {};
+        cv::Mat frame;  // 仅可视化用；与源共享像素，不拷贝
         icons.clear();
         bullseyes.clear();
+        bool last_frame = false;
 
         if (is_virtual) {
             if (paused) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
+            now = Clock::now();
+            if (sim_start == Timestamp{}) sim_start = now;
+            const auto t_sec = std::chrono::duration<double>(now - sim_start).count();
+            if (gimbal.enable) {
+                // 真实外参驱动观测生成；喂给 EKF 的那份滞后 transform_delay 秒并叠加噪声。
+                // 负的 t 直接代入正弦即可，正是"纯延迟"该有的外推行为。
+                virtual_rune->update_transform(gimbal_pose(cfg, t_sec));
+                model_pose = perturb_pose(gimbal_pose(cfg, t_sec - gimbal.transform_delay),
+                    gimbal.transform_noise, gimbal_gen);
+            }
             virtual_rune->update(now);
             const auto virtual_icons = virtual_rune->icons();
             icons.insert(icons.end(), virtual_icons.begin(), virtual_icons.end());
             const auto virtual_bullseyes = virtual_rune->bullseyes();
             bullseyes.insert(bullseyes.end(), virtual_bullseyes.begin(), virtual_bullseyes.end());
-            frame = cv::Mat::zeros(540, 960, CV_8UC3);
-            if (!paused) run_frame(frame, icons, bullseyes, now);
+
+            // 画幅裁剪：VirtualRune 的投影只判断 z>0，不判画幅，目标转出视野后仍会
+            // 产生观测。真实检测器要求 5 个关键点全部在画幅内（detector.cpp 的
+            // in_bounds），这里对齐该判据，否则云台摆动实验会得到偏乐观的结果。
+            const auto inside = [w = cfg.camera.image_width, h = cfg.camera.image_height](
+                                    const Point2d& p) {
+                return p.x >= 0.0 && p.x < w && p.y >= 0.0 && p.y < h;
+            };
+            std::erase_if(icons, [&](const RuneIcon& i) { return !inside(i.center); });
+            std::erase_if(bullseyes, [&](const RuneBullseye& b) {
+                return !inside(b.center)
+                    || std::ranges::any_of(b.corners,
+                        [&](const Point2d& c) { return !inside(c); });
+            });
+            // 画布尺寸跟随标定画幅：此前写死 960×540 与内参 (cx=720,cy=540) 不符，
+            // 关键点会画到画布外看不见。
+            if (cfg.display.enabled)
+                frame = cv::Mat::zeros(cfg.camera.image_height, cfg.camera.image_width, CV_8UC3);
         } else {
-            // Double-buffered pipeline: overlap TensorRT inference with EKF+fire control.
-            // First iteration: no pending detection, just kick off async detect.
-            if (!pending_detect.valid()) {
-                if (!capture.read(frame)) break;
-                prev_frame = frame.clone();
-                pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
-                    return detector.detect(f);
-                }, frame.clone());
-                // No tracking data yet for this first frame — just grab and display.
-            } else {
-                // Retrieve detection results from previous frame's async detect.
-                auto elements = pending_detect.get();
-                icons = std::move(elements.icons);
-                bullseyes = std::move(elements.bullseyes);
-
-                // Kick off next frame's detection in parallel with this frame's tracking.
-                cv::Mat next_frame;
-                bool has_next = capture.read(next_frame);
-                if (has_next) {
-                    pending_detect = std::async(std::launch::async, [&detector](cv::Mat f) {
-                        return detector.detect(f);
-                    }, next_frame.clone());
-                }
-                frame = prev_frame;
-                if (has_next) prev_frame = next_frame;
-
-                if (!paused) {
-                    run_frame(frame, icons, bullseyes, now);
-                }
-
-                if (!has_next) {
-                    // Process display for last frame then exit.
-                    if (cfg.display.enabled) {
-                        cv::Mat display = frame.clone();
-                        debug::DrawOptions opt{
-                            .keypoints = cfg.display.keypoints,
-                            .aimpoint = cfg.display.aimpoint,
-                            .state_text = cfg.display.state_text,
-                            .error_text = cfg.display.error_text,
-                        };
-                        if (opt.keypoints) debug::draw_detection(display, icons, bullseyes);
-                        cv::imshow(window, display);
-                        cv::waitKey(1);
-                    }
-                    ++frame_id;
-                    break;
-                }
+            // 单深度流水线：检测第 N+1 帧的同时跑第 N 帧的 EKF/火控。
+            // 预热轮只提交，没有可处理的结果。
+            if (!pipeline_primed) {
+                auto first = source->grab();
+                if (!first.valid()) break;
+                detect_worker->submit(std::move(first));
+                pipeline_primed = true;
+                continue;
             }
+
+            Frame done;
+            RuneDetector::Elements elements;
+            detect_worker->take(done, elements);
+
+            // 先把下一帧丢进检测线程，再处理本帧，两者重叠。
+            auto next = source->grab();
+            last_frame = !next.valid();
+            if (!last_frame) detect_worker->submit(std::move(next));
+
+            icons = std::move(elements.icons);
+            bullseyes = std::move(elements.bullseyes);
+            now = done.stamp;
+            // 浅拷贝，与 Frame 共享像素；真正的拷贝只在开了可视化时的 clone() 发生。
+            if (cfg.display.enabled && done.valid()) frame = *done.image;
         }
 
+        // ---- 时间步进 ----
+        if (!paused && last_now != Timestamp{}) {
+            dt = std::clamp(std::chrono::duration<double>(now - last_now).count(), 0.0, 0.5);
+        }
+        last_now = now;
+        if (!paused) run_frame(icons, bullseyes, now);
+
         // ---- 可视化（统一 draw 层）----
-        if (cfg.display.enabled) {
+        if (cfg.display.enabled && !frame.empty()) {
             cv::Mat display = frame.clone();
             debug::DrawOptions opt{
                 .keypoints = cfg.display.keypoints,
@@ -362,6 +392,7 @@ int main(int argc, char** argv) {
             if (key == 's') cv::imwrite(cv::format("shot_%04d.png", frame_id), display);
         }
         ++frame_id;
+        if (last_frame) break;  // 数据源已耗尽：本帧处理并显示完再退出
         if (is_virtual && !paused) {
             const auto next = now + std::chrono::duration_cast<Timestamp::duration>(
                                         std::chrono::duration<double>(1.0 / cfg.input.hz));
@@ -376,6 +407,12 @@ int main(int argc, char** argv) {
     std::printf("  init_ok     : %d\n", init_count);
     std::printf("  aim_ok      : %d\n", aim_count);
     std::printf("  fire_frames : %d\n", fire_count);
+    if (is_virtual && gimbal.enable) {
+        std::printf("  gimbal      : yaw=%.1fdeg@%.2fHz pitch=%.1fdeg@%.2fHz "
+                    "delay=%.3fs noise=%.3fdeg\n",
+            gimbal.yaw_amp, gimbal.yaw_freq, gimbal.pitch_amp, gimbal.pitch_freq,
+            gimbal.transform_delay, gimbal.transform_noise);
+    }
     std::printf("  predict err : mean=%.4f rad (%.2f deg), max=%.4f rad (%.2f deg), n=%zu\n",
         s.mean_error, s.mean_error * 180.0 / std::numbers::pi, s.max_error,
         s.max_error * 180.0 / std::numbers::pi, s.samples);

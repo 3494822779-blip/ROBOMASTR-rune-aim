@@ -1,0 +1,38 @@
+# 云台运动仿真 + 虚拟符（无 GPU）
+# 用途：在没有真机相机的情况下，验证"相机外参随云台运动"这条链路，
+#       并量化 IMU 回读延迟 / 外参标定误差各自贡献多少预测误差。
+#       真机上 camera.transform 由 IMU 回读驱动；工具里目前是常量，
+#       该链路在本场景之前从未被执行过。
+#
+#   ./build/rune_aim -c config/rune_gimbal_virtual.yaml --no-display --max-frames 4000
+#
+# 对照实验（只改 virtual_rune.gimbal 下的一项）：
+#   enable: false             → 静止相机基线
+#   transform_delay: 0.01..   → IMU 回读滞后敏感度
+#   transform_noise: 0.1..    → 外参标定误差敏感度
+input:
+  mode: virtual
+  hz: 200
+
+camera:
+  # 基准外参：相机抬头 18.02° 对准符心 (6.67, 0, 2.172)，使符在画幅中央。
+  # template.yaml 的单位外参会让符贴在画幅顶边（符叶有一半在画幅外），
+  # 摆动实验会分不清"摆出视野"和"本来就在视野外"。
+  transform: [0, 0, 0, 0, -0.15660, 0, 0.98766]   # t(x,y,z) + q(x,y,z,w)
+
+track:
+  noise_observation: 2.0        # 虚拟观测无像素噪声，收紧帮助收敛
+
+fire:
+  bullet_speed: 24.5            # 与 virtual_rune 演示弹道匹配
+
+virtual_rune:
+  large: false                  # false = 小符（恒速），先用最简单的运动看外参影响
+  gimbal:
+    enable: true
+    yaw_amp: 10.0               # ±10° 摆动，符角半径约 6°，半视场约 27°，不会摆出画幅
+    yaw_freq: 0.30
+    pitch_amp: 3.0
+    pitch_freq: 0.17
+    transform_delay: 0.0       # 先测纯运动的影响，再逐级加延迟
+    transform_noise: 0.0
