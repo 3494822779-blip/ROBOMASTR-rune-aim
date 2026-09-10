@@ -21,6 +21,10 @@ struct InputConfig {
 };
 
 struct CameraConfig {
+    int capture_width = 0;
+    int capture_height = 0;
+    double capture_fps = 0.0;
+    int buffer_size = 1;
     // 标定值（行优先 3×3）；virtual 模式用内置演示内参
     std::array<double, 9> matrix { 1400, 0, 720, 0, 1400, 540, 0, 0, 1 };
     std::array<double, 5> distortion { 0, 0, 0, 0, 0 };

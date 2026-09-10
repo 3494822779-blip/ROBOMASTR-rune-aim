@@ -2,6 +2,7 @@
 
 #include <opencv2/videoio.hpp>
 
+#include <cstdio>
 #include <charconv>
 #include <chrono>
 #include <system_error>
@@ -60,12 +61,23 @@ private:
 
 class CameraSource final : public FrameSource {
 public:
-    explicit CameraSource(std::string source)
+    CameraSource(std::string source, int width, int height, double fps, int buffer_size)
         : source_ { std::move(source) } {
         if (int index = 0; parse_device_index(source_, index))
             opened_ = capture_.open(index);
         else
             opened_ = capture_.open(source_);
+        if (opened_) {
+            if (width > 0) capture_.set(cv::CAP_PROP_FRAME_WIDTH, width);
+            if (height > 0) capture_.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+            if (fps > 0.0) capture_.set(cv::CAP_PROP_FPS, fps);
+            if (buffer_size > 0) capture_.set(cv::CAP_PROP_BUFFERSIZE, buffer_size);
+            std::printf("[camera] %dx%d @ %.2f fps, buffer=%d\n",
+                static_cast<int>(capture_.get(cv::CAP_PROP_FRAME_WIDTH)),
+                static_cast<int>(capture_.get(cv::CAP_PROP_FRAME_HEIGHT)),
+                capture_.get(cv::CAP_PROP_FPS),
+                static_cast<int>(capture_.get(cv::CAP_PROP_BUFFERSIZE)));
+        }
     }
 
     auto opened() const -> bool { return opened_; }
@@ -93,8 +105,8 @@ auto make_video_source(const std::string& path, double fps) -> std::unique_ptr<F
     return source;
 }
 
-auto make_camera_source(const std::string& source) -> std::unique_ptr<FrameSource> {
-    auto camera = std::make_unique<CameraSource>(source);
+auto make_camera_source(const std::string& source, int width, int height, double fps, int buffer_size) -> std::unique_ptr<FrameSource> {
+    auto camera = std::make_unique<CameraSource>(source, width, height, fps, buffer_size);
     if (!camera->opened()) return nullptr;
     return camera;
 }

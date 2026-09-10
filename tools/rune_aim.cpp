@@ -177,7 +177,9 @@ int main(int argc, char** argv) {
         // CAP_PROP_FPS 查询干扰解码器）；0 或越界时由 FrameSource 回退到 30。
         double video_fps = cfg.input.video_fps;
         if (video_fps <= 0.0 || video_fps > 1000.0) video_fps = 30.0;
-        source = is_camera ? make_camera_source(src) : make_video_source(src, video_fps);
+        source = is_camera ? make_camera_source(src, cfg.camera.capture_width, cfg.camera.capture_height,
+                                                cfg.camera.capture_fps, cfg.camera.buffer_size)
+                           : make_video_source(src, video_fps);
         if (!source) {
             std::fprintf(stderr, "无法打开数据源: %s\n", src.c_str());
             return 4;
@@ -351,7 +353,9 @@ int main(int argc, char** argv) {
 
         // ---- 时间步进 ----
         if (!paused && last_now != Timestamp{}) {
-            dt = std::clamp(std::chrono::duration<double>(now - last_now).count(), 0.0, 0.5);
+            // 使用帧自身采集时间，避免相机抖动/丢帧时固定 dt 导致预测偏差。
+            // 极端时间戳异常时限幅，防止一次坏帧把状态推飞。
+            dt = std::clamp(std::chrono::duration<double>(now - last_now).count(), 1e-4, 0.1);
         }
         last_now = now;
         if (!paused) run_frame(icons, bullseyes, now);

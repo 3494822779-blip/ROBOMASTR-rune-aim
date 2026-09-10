@@ -42,6 +42,7 @@ auto make_video_source(const std::string& path, double fps) -> std::unique_ptr<F
 
 // 相机。source 为纯十进制整数时按设备索引打开，否则按字符串打开
 // （/dev/videoN、GStreamer pipeline、RTSP URL 等）。打开失败返回 nullptr。
-auto make_camera_source(const std::string& source) -> std::unique_ptr<FrameSource>;
+auto make_camera_source(const std::string& source, int width = 0, int height = 0,
+                       double fps = 0.0, int buffer_size = 1) -> std::unique_ptr<FrameSource>;
 
 }  // namespace rmcs

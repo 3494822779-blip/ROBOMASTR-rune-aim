@@ -57,6 +57,10 @@ auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
     cfg.camera.distortion  = get_array(camera, "distortion", cfg.camera.distortion);
     cfg.camera.image_width  = get_or(camera, "image_width", cfg.camera.image_width);
     cfg.camera.image_height = get_or(camera, "image_height", cfg.camera.image_height);
+    cfg.camera.capture_width = get_or(camera, "capture_width", cfg.camera.capture_width);
+    cfg.camera.capture_height = get_or(camera, "capture_height", cfg.camera.capture_height);
+    cfg.camera.capture_fps = get_or(camera, "capture_fps", cfg.camera.capture_fps);
+    cfg.camera.buffer_size = get_or(camera, "buffer_size", cfg.camera.buffer_size);
     if (camera && camera["transform"]) {
         try {
             const auto t = camera["transform"].as<std::array<double, 7>>();
