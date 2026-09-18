@@ -1,6 +1,7 @@
 #include "detect/detector.hpp"
 
 #include <opencv2/videoio.hpp>
+#include <opencv2/imgproc.hpp>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -27,6 +28,7 @@ int main(int argc, char** argv) {
     }
 
     int frames = 0, detected_frames = 0;
+    int red_frames = 0, red_detected = 0, blue_frames = 0, blue_detected = 0;
     std::size_t targets = 0;
     double inference_ms = 0.0;
     cv::Mat frame;
@@ -36,6 +38,21 @@ int main(int argc, char** argv) {
         const auto end = std::chrono::steady_clock::now();
         inference_ms += std::chrono::duration<double, std::milli>(end - begin).count();
         if (!elements.bullseyes.empty()) ++detected_frames;
+        cv::Mat hsv;
+        cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
+        cv::Mat red_low, red_high, blue;
+        cv::inRange(hsv, cv::Scalar(0, 90, 80), cv::Scalar(15, 255, 255), red_low);
+        cv::inRange(hsv, cv::Scalar(165, 90, 80), cv::Scalar(179, 255, 255), red_high);
+        cv::inRange(hsv, cv::Scalar(90, 90, 80), cv::Scalar(140, 255, 255), blue);
+        const int red_pixels = cv::countNonZero(red_low) + cv::countNonZero(red_high);
+        const int blue_pixels = cv::countNonZero(blue);
+        if (red_pixels > blue_pixels && red_pixels > 50) {
+            ++red_frames;
+            if (!elements.bullseyes.empty()) ++red_detected;
+        } else if (blue_pixels > red_pixels && blue_pixels > 50) {
+            ++blue_frames;
+            if (!elements.bullseyes.empty()) ++blue_detected;
+        }
         targets += elements.bullseyes.size();
         ++frames;
     }
@@ -46,5 +63,7 @@ int main(int argc, char** argv) {
               << "targets=" << targets << '\n'
               << "average_ms=" << average << '\n'
               << "pipeline_fps=" << (average > 0.0 ? 1000.0 / average : 0.0) << '\n';
+    std::cout << "red_detected=" << red_detected << '/' << red_frames << '\n'
+              << "blue_detected=" << blue_detected << '/' << blue_frames << '\n';
     return frames > 0 ? 0 : 5;
 }

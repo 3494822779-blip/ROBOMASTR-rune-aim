@@ -4,3 +4,5 @@ lib/
 *.a
 *.so
 __pycache__/
+
+build-ros/

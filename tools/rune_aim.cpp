@@ -10,6 +10,9 @@
 //
 // 链路：数据源(视频/虚拟符/相机) → RuneDetector(视频/相机) 或 VirtualRune
 //       → RuneModel(EKF 跟踪) → RuneFireControl(预瞄+开火) → RuneDiagnostics(误差)
+#ifdef RUNE_ENABLE_ROS2
+#include "ros/telemetry.hpp"
+#endif
 #include "core/angle.hpp"
 #include "core/config_loader.hpp"
 #include "core/frame_source.hpp"
@@ -49,6 +52,8 @@ struct Cli {
     std::string source;          // 空 = 用 yaml
     int max_frames = -1;         // -1 = 用 yaml
     bool no_display = false;
+    bool ros = false;
+    double ros_image_fps = 15.0;
 };
 
 auto parse_cli(int argc, char** argv) -> Cli {
@@ -64,10 +69,21 @@ auto parse_cli(int argc, char** argv) -> Cli {
         else if (a == "--mode") cli.mode = next("--mode");
         else if (a == "--source") cli.source = next("--source");
         else if (a == "--max-frames") cli.max_frames = std::atoi(next("--max-frames"));
+        else if (a == "--ros-image-fps") {
+            char* end = nullptr;
+            const char* value = next("--ros-image-fps");
+            cli.ros_image_fps = std::strtod(value, &end);
+            if (*end != '\0' || !std::isfinite(cli.ros_image_fps) ||
+                cli.ros_image_fps <= 0 || cli.ros_image_fps > 240) {
+                std::fprintf(stderr, "--ros-image-fps must be in (0, 240]\n");
+                std::exit(2);
+            }
+        }
+        else if (a == "--ros") cli.ros = true;
         else if (a == "--no-display") cli.no_display = true;
         else if (a == "-h" || a == "--help") {
             std::printf("用法: rune_aim -c <config.yaml> [--mode video|virtual|camera]"
-                        " [--source <path|dev>] [--max-frames N] [--no-display]\n");
+                        " [--source <path|dev>] [--max-frames N] [--no-display] [--ros] [--ros-image-fps 15]\n");
             std::exit(0);
         } else {
             std::fprintf(stderr, "未知参数: %s\n", a.c_str());
@@ -112,6 +128,15 @@ int main(int argc, char** argv) {
     if (cli.max_frames >= 0) cfg.input.max_frames = cli.max_frames;
     if (cli.no_display) cfg.display.enabled = false;
     cfg::print_config(cfg);
+#ifdef RUNE_ENABLE_ROS2
+    std::unique_ptr<RosTelemetry> ros;
+    if (cli.ros) ros = std::make_unique<RosTelemetry>(cfg, cli.ros_image_fps);
+#else
+    if (cli.ros) {
+        std::fprintf(stderr, "ROS support requires cmake -DENABLE_ROS2=ON\n");
+        return 2;
+    }
+#endif
 
     const bool is_virtual = cfg.input.mode == "virtual";
     const bool is_video   = cfg.input.mode == "video";
@@ -226,6 +251,7 @@ int main(int argc, char** argv) {
     const auto run_frame = [&](std::vector<RuneIcon>& icons,
                                 std::vector<RuneBullseye>& bullseyes, Timestamp now) {
         tracking_corrected = false;
+        last_cmd = {};  // Never expose a previous frame command after loss/reinitialization.
         // 外参每帧刷新。注意必须放在 init 之前：云台运动下 init() 也要用当前帧的外参，
         // 此前只在 rune_inited 之后更新，静止相机看不出问题，一旦外参时变就会用错。
         model.update_transform(model_pose);
@@ -278,6 +304,11 @@ int main(int argc, char** argv) {
     };
 
     while (true) {
+        bool ros_image = false;
+#ifdef RUNE_ENABLE_ROS2
+        if (ros && !ros->ok()) break;
+        ros_image = ros && ros->image_due();
+#endif
         if (cfg.input.max_frames > 0 && frame_id >= cfg.input.max_frames) break;
 
         // 每帧的时间戳由各分支确定：虚拟模式用挂钟，video/camera 用帧**自带的采集时刻**。
@@ -322,7 +353,7 @@ int main(int argc, char** argv) {
             });
             // 画布尺寸跟随标定画幅：此前写死 960×540 与内参 (cx=720,cy=540) 不符，
             // 关键点会画到画布外看不见。
-            if (cfg.display.enabled)
+            if (cfg.display.enabled || ros_image)
                 frame = cv::Mat::zeros(cfg.camera.image_height, cfg.camera.image_width, CV_8UC3);
         } else {
             // 单深度流水线：检测第 N+1 帧的同时跑第 N 帧的 EKF/火控。
@@ -348,7 +379,7 @@ int main(int argc, char** argv) {
             bullseyes = std::move(elements.bullseyes);
             now = done.stamp;
             // 浅拷贝，与 Frame 共享像素；真正的拷贝只在开了可视化时的 clone() 发生。
-            if (cfg.display.enabled && done.valid()) frame = *done.image;
+            if ((cfg.display.enabled || ros_image) && done.valid()) frame = *done.image;
         }
 
         // ---- 时间步进 ----
@@ -360,6 +391,13 @@ int main(int argc, char** argv) {
         last_now = now;
         if (!paused) run_frame(icons, bullseyes, now);
 
+#ifdef RUNE_ENABLE_ROS2
+        if (ros) {
+            const auto state = rune_inited ? std::optional(model.state()) : std::nullopt;
+            ros->publish(now, frame, icons, bullseyes, state ? &*state : nullptr,
+                         last_cmd, diag.stats(), tracking_corrected);
+        }
+#endif
         // ---- 可视化（统一 draw 层）----
         if (cfg.display.enabled && !frame.empty()) {
             cv::Mat display = frame.clone();

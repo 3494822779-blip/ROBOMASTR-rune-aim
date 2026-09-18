@@ -1,7 +1,7 @@
 # rune_aim —— RoboMaster 能量机关检测 / 跟踪 / 预测 / 火控
 
 面向 RoboMaster 能量机关（符）的完整工程：TensorRT 神经检测 → PnP 初始化 → EKF 跟踪 →
-转速拟合 → 弹道解算 → 火控状态机 → 预测误差诊断。**纯 C++/CUDA，不依赖 ROS2。**
+转速拟合 → 弹道解算 → 火控状态机 → 预测误差诊断。**核心库为纯 C++/CUDA；可选 ROS 2 发布层支持 Foxglove 远程可视化。**
 
 ## 快速开始
 
@@ -29,7 +29,7 @@ rune_aim/
 │   ├── fire/        RuneFireControl（预瞄+开火状态机）+ Trajectory（弹道）
 │   ├── diag/        RuneDiagnostics（预测误差）+ DelayCalibrator（链路延迟标定）
 │   └── debug/       统一可视化绘制层
-├── tools/           命令行工具：rune_aim（统一入口）/ rune_bench / delay_calib
+├── tools/           命令行工具：rune_aim / rune_bench / camera_calib / delay_calib
 ├── data/            测试视频（rune_test_h264.mp4）
 ├── model/           ONNX 与 TensorRT FP16 engine
 ├── docs/            文档（PIPELINE.md 为全链路详解，推荐先读）
@@ -60,6 +60,109 @@ template.yaml 一处即可全局生效；启动日志打印 base/scene 两层与
 | `rune_aim` | 统一入口（video/virtual/camera 三模式 + 可视化调试） | `./build/rune_aim -c config/rune_small_virtual.yaml --no-display` |
 | `rune_bench` | 检测器性能基准 | `./build/rune_bench <engine> <video> [max_frames] [score_thr] [keypoint_thr]` |
 | `delay_calib` | 链路延迟互相关标定 | `./build/delay_calib 120 2 30` |
+| `camera_calib` | 棋盘格相机内参标定 | `./build/camera_calib --cols 9 --rows 6 --square-mm 25` |
+
+### 相机内参标定
+
+`camera_calib` 使用 OpenCV 的 `findChessboardCornersSB` 检测棋盘格并获得亚像素角点，
+随后通过 `calibrateCamera` 求解相机内参和畸变系数。SB 检测器对透视、光照变化和较大的
+角点阵列比传统 `findChessboardCorners` 更稳健。
+默认采集方式与 `camera_sentry.yaml` 一致：MJPEG 1280x720@60。
+
+#### 1. 准备标定板
+
+默认标定板参数是 **9x6 个内角点、方格边长 25 mm**。这里的 9x6 指黑白方格交界处的
+内角点数量，对应的棋盘格本身是 10x7 个方格。请用尺实际测量一个方格的边长，不要填写
+整张标定板的尺寸。如果你的标定板规格不同，运行时修改 `--cols`、`--rows` 和
+`--square-mm`。
+
+例如，纸面上数到 12x9 个完整黑白方格时，实际只有 11x8 个内角点，应传入
+`--cols 11 --rows 8`，而不是 `--cols 12 --rows 9`。棋盘格最外圈四个角不属于内角点。
+
+标定和实际运行必须保持以下条件一致：
+
+- 分辨率和图像裁剪方式相同；本项目当前使用 1280x720。
+- 镜头焦距、对焦位置不变。可变焦镜头调整后必须重新标定。
+- 标定板保持平整，打印时关闭“适应页面”之类的缩放选项。
+
+#### 2. 构建并运行
+
+```bash
+cmake --build build --target camera_calib -j$(nproc)
+
+./build/camera_calib --cols 9 --rows 6 --square-mm 25 --samples 25 \
+  --output /tmp/camera_calibration.yaml
+```
+
+默认会打开 `/dev/video0`。使用其他相机或管线时可通过 `--source` 指定，例如直接使用
+OpenCV 设备索引：
+
+```bash
+./build/camera_calib --source 1 --cols 9 --rows 6 --square-mm 25
+```
+
+| 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `--source` | MJPEG 1280x720@60 GStreamer 管线 | 相机设备索引或 GStreamer 管线 |
+| `--cols` | `9` | 棋盘格横向内角点数 |
+| `--rows` | `6` | 棋盘格纵向内角点数 |
+| `--square-mm` | `25` | 单个方格实际边长，单位 mm |
+| `--samples` | `25` | 自动开始计算所需的采样数，最小为 10 |
+| `--output` | `/tmp/camera_calibration.yaml` | 标定结果文件 |
+
+#### 3. 采集图像
+
+窗口显示绿色 `Corners: FOUND` 并画出彩色角点连线时，说明 OpenCV 已完整检测到棋盘格，
+此时按空格保存当前观测。建议采集 20 到 30 张，且每张姿态应有明显差异：
+
+- 棋盘格分别出现在画面中央、四角和四条边附近。
+- 包含正对镜头及向上、下、左、右倾斜的姿态。
+- 同时采集较近和较远的画面，但棋盘格应清晰且完整可见。
+- 避免连续采集几乎相同的姿态，避免运动模糊、反光和过曝。
+- 如果始终显示 `Corners: not found`，先核对传入的是内角点数，并增加环境照明；整块棋盘
+  必须完整进入画面，周围最好保留一圈白色边框。
+
+按键如下：
+
+| 按键 | 功能 |
+|---|---|
+| `Space` | 角点检测成功时采集当前帧 |
+| `Enter` | 至少采集 10 张后立即计算 |
+| `u` | 标定完成后切换原图/去畸变预览 |
+| `q` / `Esc` | 退出 |
+
+达到 `--samples` 指定的数量后会自动计算。终端会打印每张图的重投影误差，以及整体
+`RMS`、平均误差和最大误差。通常平均误差低于 0.5 px 较好；超过 1 px 时应检查角点规格、
+图像清晰度和采样姿态，并重新标定。这个阈值只是经验值，最终还应观察去畸变预览中直线
+是否自然、图像边缘是否出现异常拉伸。
+
+#### 4. 写入运行配置
+
+成功后，`/tmp/camera_calibration.yaml` 会生成项目可读的 YAML：
+
+```yaml
+camera:
+  matrix: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+  distortion: [k1, k2, p1, p2, k3]
+  image_width: 1280
+  image_height: 720
+```
+
+将结果中的这四项替换到 `config/camera_sentry.yaml` 现有的 `camera:` 段中，并保留原来的
+`transform` 外参。例如：
+
+```yaml
+camera:
+  matrix: [标定输出的 9 个数值]
+  distortion: [标定输出的 5 个数值]
+  image_width: 1280
+  image_height: 720
+  transform: [0, 0, 0, 1, 0, 0, 0]  # 相机到 Odom 外参，需另行标定
+```
+
+内参只适用于标定时的分辨率和镜头状态。以后切换到 1920x1080、改变裁剪、变焦或重新对焦，
+都需要重新标定。`camera_calib` 只求相机内参和镜头畸变，不会求解相机到云台/Odom 的
+`transform` 外参。
 
 ## 真值闭环测试结果（虚拟符）
 
@@ -171,3 +274,40 @@ template.yaml 一处即可全局生效；启动日志打印 base/scene 两层与
 | R2 | 轨迹积分 Euler → RK4，提高远距/高速场景精度 |
 | **G1** | **云台运动仿真：`virtual_rune.gimbal` 让相机外参随时间摆动，可注入 IMU 回读滞后与外参标定噪声；配套修复 virtual 模式缺失的画幅裁剪与 init 前外参未刷新** |
 | **G2** | **数据源抽象 `FrameSource`：帧自带采集时间戳，消除双缓冲流水线的一帧时间戳偏差；检测改为常驻线程（原每帧新建 `std::async` 线程）；每帧 3 次全图 clone 降为 1 次；修复 camera 模式非数字 source 触发 `std::stoi` 未捕获异常导致的崩溃** |
+
+## ROS 2 / Foxglove
+
+```bash
+tools/build_ros.sh
+tools/start_foxglove.sh                         # 虚拟符演示，无需相机
+tools/start_foxglove.sh -c config/rune_video.yaml # 视频检测
+tools/start_foxglove.sh -c config/camera_sentry.yaml # 已配置好的相机
+```
+
+另一台电脑用最新版 Foxglove，选择 Foxglove WebSocket，连接 `ws://机器人IP:8765`。
+两台电脑需网络互通。Ctrl+C 同时停止算法和桥接；脚本不配置开机自启。
+桥接与算法使用当前环境的 `ROS_DOMAIN_ID`（默认 0）。8765 已占用时脚本会提示先停旧桥接。
+也可只启动算法：`source /opt/ros/humble/setup.bash` 后运行
+`./build-ros/rune_aim --ros --no-display -c config/rune_gimbal_virtual.yaml`。
+
+| Foxglove 面板 | 话题 / 设置 | 内容 |
+| --- | --- | --- |
+| Image | `/rune/image/compressed` | JPEG 图像、检测关键点、类别、状态、误差；虚拟模式为合成画布 |
+| 3D | 固定坐标系 `odom`，启用 `/rune/markers` | 紫色符心、绿色当前未激活符叶、黄色预测点，单位米 |
+| Plot | `/rune/aim.vector.x`、`/rune/aim.vector.y` | yaw / pitch，单位 rad |
+| Plot | `/rune/aim.vector.z` | 弹丸飞行时间，单位秒 |
+| Raw Messages | `/rune/status` | 跟踪有效性、是否修正、fire、检测数量、相位/转速、预测误差和原因 |
+
+仅在解算有效时发布 `/rune/aim`；失跟帧清空旧指令并删除 3D 标记。
+消息时间戳保留帧采集时间（视频为合成时间），从 steady clock 一次性映射至 Unix 时间；
+视频未做实时限速，回放时间可能快于挂钟，不应把它当作现场实时数据。
+图像只有订阅者连接时才编码，默认最高 15 FPS、JPEG 质量 75；
+可用 `tools/start_foxglove.sh -c config/rune_gimbal_virtual.yaml --ros-image-fps 30` 改为 30 FPS
+（支持 0 < FPS ≤ 240，上限不代表实际保证帧率）；编码在主线程，会增加处理耗时。
+3D 数据已经在 odom 坐标系中，不依赖 TF；图像仅作 2D 显示，目前未发布 CameraInfo/相机 TF。
+本接入发布遥测数据，没有 ROS 云台/串口控制订阅接口。
+默认 `./build.sh` 仍构建不依赖 ROS 的版本；ROS 版本使用单独的 `build-ros/`。
+依赖：ROS 2 Humble 的 rclcpp、sensor_msgs、geometry_msgs、diagnostic_msgs、visualization_msgs
+以及 `ros-humble-foxglove-bridge`（本机已安装）。
+
+链路验证：启动虚拟符后执行 `python3 tools/check_ros.py`（先 source ROS 环境；需要 python3-websocket、OpenCV、NumPy）。

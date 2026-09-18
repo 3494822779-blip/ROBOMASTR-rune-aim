@@ -17,4 +17,4 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE="${BUILD_TYPE:-Release}" \
   -DCMAKE_C_COMPILER="$cc_bin" -DCMAKE_CXX_COMPILER="$cxx_bin"
 cmake --build build -j"$jobs"
 cp -f build/librune_core.a lib/librune_core.a
-echo "构建完成：build/rune_aim  build/rune_bench  build/delay_calib  lib/librune_core.a"
+echo "构建完成：build/rune_aim  build/rune_bench  build/delay_calib  build/camera_calib  lib/librune_core.a"

@@ -3,7 +3,7 @@
 # 相机内参默认用 template 的 1440×1080 演示值；实车请用 camera_sentry.yaml 的标定值。
 input:
   mode: video
-  source: data/rune_test_h264.mp4
+  source: data/rune_test_h265_scale425.mp4
   max_frames: 0
   video_fps: 50
 

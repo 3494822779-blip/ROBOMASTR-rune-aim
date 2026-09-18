@@ -4,6 +4,7 @@ project(rune_aim LANGUAGES CXX CUDA)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type (Debug, Release, RelWithDebInfo)")
+option(ENABLE_ROS2 "Build optional ROS 2 telemetry (--ros)" OFF)
 option(ENABLE_SANITIZERS "Enable ASan/UBSan for host C++ code" OFF)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d ximgproc videoio highgui)
@@ -66,7 +67,7 @@ set_target_properties(rune_core PROPERTIES
 
 # ---- 统一命令行入口（video / virtual / camera 三模式） ----
 add_executable(rune_aim tools/rune_aim.cpp)
-target_link_libraries(rune_aim PRIVATE rune_core)
+target_link_libraries(rune_aim rune_core)
 
 # ---- 检测性能基准 ----
 add_executable(rune_bench tools/rune_bench.cpp)
@@ -75,3 +76,19 @@ target_link_libraries(rune_bench PRIVATE rune_core)
 # ---- 链路延迟标定 ----
 add_executable(delay_calib tools/delay_calib.cpp)
 target_link_libraries(delay_calib PRIVATE rune_core)
+
+# ---- 相机棋盘格内参标定 ----
+add_executable(camera_calib tools/camera_calib.cpp)
+target_link_libraries(camera_calib PRIVATE ${OpenCV_LIBS})
+
+if(ENABLE_ROS2)
+  find_package(ament_cmake REQUIRED)
+  find_package(rclcpp REQUIRED)
+  find_package(sensor_msgs REQUIRED)
+  find_package(diagnostic_msgs REQUIRED)
+  find_package(geometry_msgs REQUIRED)
+  find_package(visualization_msgs REQUIRED)
+  target_sources(rune_aim PRIVATE src/ros/telemetry.cpp)
+  target_compile_definitions(rune_aim PRIVATE RUNE_ENABLE_ROS2)
+  ament_target_dependencies(rune_aim rclcpp sensor_msgs diagnostic_msgs geometry_msgs visualization_msgs)
+endif()
