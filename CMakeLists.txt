@@ -57,7 +57,8 @@ target_compile_options(rune_core PRIVATE
 )
 if(ENABLE_SANITIZERS)
   target_compile_options(rune_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined;-fno-omit-frame-pointer>)
-  target_link_options(rune_core PRIVATE -fsanitize=address,undefined)
+  # rune_core is static, so sanitizer runtimes must be linked by its executables.
+  target_link_options(rune_core INTERFACE -fsanitize=address,undefined)
 endif()
 set_target_properties(rune_core PROPERTIES
   CUDA_STANDARD 17

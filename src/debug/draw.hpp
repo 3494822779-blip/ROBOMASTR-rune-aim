@@ -18,6 +18,7 @@ namespace rmcs::debug {
 struct DrawOptions {
     bool keypoints = true;
     bool aimpoint = true;
+    bool hitpoint = false;
     bool state_text = true;
     bool error_text = true;
 };
@@ -26,9 +27,15 @@ struct DrawOptions {
 void draw_detection(cv::Mat& img, const std::vector<RuneIcon>& icons,
     const std::vector<RuneBullseye>& bullseyes);
 
-// 火控层：把命中时刻的未激活符叶端点投影回图像（单位外参演示；真机用 TF 外参）
+// 火控层：把命中时刻的未激活符叶端点按当前相机外参投影回图像。
 void draw_aimpoint(cv::Mat& img, const RuneModel::State& state, double lead_time,
-    const std::array<double, 9>& K);
+    const std::array<double, 9>& K, const std::array<double, 5>& distortion,
+    const Transform& camera_transform);
+
+// 命中回放层：把开火时锁定的落点绘制在预计命中时刻对应的视频帧上。
+auto draw_hitpoint(cv::Mat& img, const Point3d& hitpoint,
+    const std::array<double, 9>& K, const std::array<double, 5>& distortion,
+    const Transform& camera_transform) -> bool;
 
 // 状态层：火控状态机文字（开火红色）+ 诊断误差
 void draw_status(cv::Mat& img, const RuneFireControl::Command& cmd,

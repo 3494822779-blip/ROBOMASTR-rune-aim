@@ -5,11 +5,11 @@
 # =============================================================
 
 input:                    # —— 数据源 ——
-  mode: virtual           # video | virtual | camera
+  mode: virtual           # video | fixed_video | virtual | camera
   source: data/rune_test_h264.mp4   # video: 视频路径；camera: 设备索引 "0"
   max_frames: 0           # 0 = 不限帧
   hz: 200                 # virtual 模式仿真帧率 Hz
-  video_fps: 0            # video 模式帧率（0 = 默认 30；实际值用 ffprobe 查看）
+  video_fps: 0            # video PTS 无效时的兜底帧率（0 = 30）
 
 camera:                   # —— 相机标定（virtual 模式可用演示内参）——
   matrix: [1400, 0, 720, 0, 1400, 540, 0, 0, 1]   # 内参 3×3 行优先（fx 0 cx 0 fy cy 0 0 1）
@@ -93,5 +93,6 @@ display:                  # —— 可视化调试开关 ——
   enabled: true           # false = 纯终端运行（无人值守/性能测试）
   keypoints: true         # 画检测关键点/符叶/R 标
   aimpoint: false          # 画命中时刻预瞄点
+  hitpoint: false          # 开火窗口开始后，在预计命中时刻对应的视频帧画解算落点
   state_text: false        # 画火控状态文字
   error_text: false        # 画诊断误差文字

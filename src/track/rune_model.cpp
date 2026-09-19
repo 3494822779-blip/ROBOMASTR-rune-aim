@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <limits>
 #include <numbers>
 #include <optional>
@@ -262,6 +263,12 @@ struct RuneModel::Impl {
     Timestamp current_stamp;
     std::size_t update_count = 0;
     RuneEnergyFitter fitter;
+    RuneEnergyFitWorker fit_worker;
+    std::uint64_t fit_generation = 0;
+    bool prefer_linear_fit = false;
+    int small_activation_evidence = 0;
+    int big_activation_evidence = 0;
+    double last_sine_probe_t = -std::numeric_limits<double>::infinity();
     Timestamp force_sine_until { };
 
     explicit Impl(const Config& cfg) noexcept {
@@ -754,6 +761,11 @@ struct RuneModel::Impl {
         current_stamp  = timestamp;
         update_count   = 0;
         fitter.reset();
+        fit_generation++;
+        prefer_linear_fit = false;
+        small_activation_evidence = 0;
+        big_activation_evidence = 0;
+        last_sine_probe_t = -std::numeric_limits<double>::infinity();
 
         blade_inactive.fill(false);
         blade_inactive_timeout.fill(Timestamp { });
@@ -821,13 +833,15 @@ struct RuneModel::Impl {
             Eigen::Vector2d pixel;
             bool is_icon;
             bool is_inactive;
+            RuneBullseye::Activation activation;
         };
         auto observations = std::vector<Obs> { };
         for (const auto& ic : icons)
-            observations.push_back({ Eigen::Vector2d(ic.center.x, ic.center.y), true, false });
+            observations.push_back({ Eigen::Vector2d(ic.center.x, ic.center.y), true, false,
+                RuneBullseye::Activation::Inactive });
         for (const auto& bs : bullseyes)
-            observations.push_back(
-                { Eigen::Vector2d(bs.center.x, bs.center.y), false, !bs.active });
+            observations.push_back({ Eigen::Vector2d(bs.center.x, bs.center.y), false,
+                !bs.active, bs.activation });
 
         if (observations.empty()) return false;
         const auto N = static_cast<int>(observations.size());
@@ -871,6 +885,7 @@ struct RuneModel::Impl {
 
         addition.tracked.clear();
         auto inactive_corrected = 0, active_corrected = 0;
+        auto small_active_corrected = 0, big_active_corrected = 0;
         for (int i = 0; i < N; ++i) {
             if (!assignments[i]) continue;
             auto j = *assignments[i];
@@ -891,6 +906,10 @@ struct RuneModel::Impl {
                     blade_inactive_timeout[blade] = current_stamp + kInactiveTimeout;
                 } else {
                     active_corrected++;
+                    if (observations[i].activation == RuneBullseye::Activation::SmallActive)
+                        small_active_corrected++;
+                    else if (observations[i].activation == RuneBullseye::Activation::BigActive)
+                        big_active_corrected++;
                 }
             }
             addition.tracked.push_back(
@@ -905,7 +924,28 @@ struct RuneModel::Impl {
             }
         }
 
-        if (inactive_corrected > 1) force_sine_until = current_stamp + std::chrono::seconds { 3 };
+        constexpr int kActivationEvidenceFrames = 3;
+        if (big_active_corrected > 0 && small_active_corrected == 0) {
+            big_activation_evidence = std::min(
+                kActivationEvidenceFrames, big_activation_evidence + 1);
+            small_activation_evidence = 0;
+        } else if (small_active_corrected > 0 && big_active_corrected == 0) {
+            small_activation_evidence = std::min(
+                kActivationEvidenceFrames, small_activation_evidence + 1);
+            big_activation_evidence = 0;
+        } else {
+            // Missing or contradictory category observations break continuity.
+            small_activation_evidence = 0;
+            big_activation_evidence = 0;
+        }
+        if (inactive_corrected > 1 || big_activation_evidence >= kActivationEvidenceFrames) {
+            force_sine_until = current_stamp + std::chrono::seconds { 3 };
+            prefer_linear_fit = false;
+        } else if (small_activation_evidence >= kActivationEvidenceFrames
+            && current_stamp >= force_sine_until) {
+            prefer_linear_fit = true;
+            context.sine_valid = false;
+        }
 
         if (inactive_corrected > 0 || active_corrected > 0) {
             update_count += 1;
@@ -915,36 +955,51 @@ struct RuneModel::Impl {
                 blade_inactive, init_timestamp, current_stamp, converge());
             const auto t_now =
                 std::chrono::duration<double>(current_stamp - init_timestamp).count();
+            const auto forced_sine = current_stamp < force_sine_until;
+            const auto confirmed_small =
+                small_activation_evidence >= kActivationEvidenceFrames && !forced_sine;
 
-            // 能量拟合包含大量 Eigen 优化（粗扫 + 黄金分割），无需每个校正帧执行。
-            // 降频拟合可避免样本窗口变长后单帧耗时暴涨；EKF/火控仍保持逐帧更新。
-            constexpr std::size_t kFitInterval = 5;
-            if (t_now >= kFitWarmupSeconds && (update_count % kFitInterval == 0)) {
-                fitter.push(t_now, state.rotation_angle);
-
-                auto res_linear = fitter.fit_linear();
-                auto res_sine   = fitter.fit_sine();
-
-                if (res_sine
-                    && (!res_linear || current_stamp < force_sine_until
-                        || (res_sine->cost < res_linear->cost && res_sine->a >= 0.6))) {
+            // Consume completed work without ever waiting in the tracking/fire-control path.
+            if (auto fit = fit_worker.poll(); fit && fit->generation == fit_generation) {
+                const auto use_sine = fit->sine && !confirmed_small
+                    && (!fit->linear || forced_sine
+                        || (fit->sine->cost < fit->linear->cost && fit->sine->a >= 0.6));
+                if (use_sine) {
+                    const auto model_t = t_now;
                     context.use_prediction_speed = false;
-                    context.sine_cost            = res_sine->cost;
-                    context.sine_C               = res_sine->C;
-                    context.sine_v               = res_sine->v;
-                    context.sine_a               = res_sine->a;
-                    context.sine_omega           = res_sine->omega;
-                    context.sine_phase           = res_sine->omega * t_now + res_sine->phi;
-                    context.sine_t               = t_now;
+                    context.sine_cost            = fit->sine->cost;
+                    context.sine_C               = fit->sine->C;
+                    context.sine_v               = fit->sine->v;
+                    context.sine_a               = fit->sine->a;
+                    context.sine_omega           = fit->sine->omega;
+                    context.sine_phase           = fit->sine->omega * model_t + fit->sine->phi;
+                    context.sine_t               = model_t;
                     context.sine_valid           = true;
-                } else if (res_linear) {
-                    context.prediction_speed     = res_linear->speed;
+                    prefer_linear_fit             = false;
+                } else if (fit->linear && !forced_sine) {
+                    context.prediction_speed     = fit->linear->speed;
                     context.use_prediction_speed = true;
-                    context.prediction_cost      = res_linear->cost;
+                    context.prediction_cost      = fit->linear->cost;
                     context.sine_valid           = false;
+                    prefer_linear_fit             = true;
                 }
             }
 
+            // Keep the original 5-correction sampling density, but fit only every
+            // 10 frames for a sine model and every 20 after small-rune evidence.
+            constexpr std::size_t kSampleInterval = 5;
+            if (t_now >= kFitWarmupSeconds && (update_count % kSampleInterval == 0))
+                fitter.push(t_now, state.rotation_angle);
+
+            const auto fit_interval = prefer_linear_fit ? std::size_t { 20 } : std::size_t { 10 };
+            if (t_now >= kFitWarmupSeconds && (update_count % fit_interval == 0)) {
+                constexpr double kSineProbeSeconds = 1.0;
+                const auto probe_sine = forced_sine || !prefer_linear_fit
+                    || (t_now - last_sine_probe_t >= kSineProbeSeconds);
+                if (fit_worker.try_submit(fitter, fit_generation, probe_sine)
+                    && probe_sine)
+                    last_sine_probe_t = t_now;
+            }
         }
 
         return inactive_corrected > 0;

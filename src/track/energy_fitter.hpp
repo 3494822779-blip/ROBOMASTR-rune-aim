@@ -1,8 +1,12 @@
 #pragma once
 
 #include <deque>
+#include <condition_variable>
+#include <cstdint>
 #include <limits>
+#include <mutex>
 #include <optional>
+#include <thread>
 
 namespace rmcs {
 
@@ -44,6 +48,44 @@ private:
 
     template <typename Pred>
     static auto compute_weighted_cost(const std::deque<Point>& buffer, Pred&& pred_fn) -> double;
+};
+
+// Runs the expensive model comparison on one persistent background thread.
+// Only one request can be in flight; callers keep using the last accepted fit.
+class RuneEnergyFitWorker {
+public:
+    struct Result {
+        std::optional<RuneEnergyFitter::LinearResult> linear;
+        std::optional<RuneEnergyFitter::FitResult> sine;
+        std::uint64_t generation = 0;
+    };
+
+    RuneEnergyFitWorker();
+    ~RuneEnergyFitWorker();
+    RuneEnergyFitWorker(const RuneEnergyFitWorker&) = delete;
+    auto operator=(const RuneEnergyFitWorker&) -> RuneEnergyFitWorker& = delete;
+
+    // Returns false when a fit or an unread result is already pending.
+    auto try_submit(const RuneEnergyFitter& fitter,
+        std::uint64_t generation, bool calculate_sine) noexcept -> bool;
+    auto poll() noexcept -> std::optional<Result>;
+
+private:
+    struct Request {
+        RuneEnergyFitter fitter;
+        std::uint64_t generation = 0;
+        bool calculate_sine = false;
+    };
+
+    auto run() noexcept -> void;
+
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    std::optional<Request> request_;
+    std::optional<Result> result_;
+    bool busy_ = false;
+    bool stop_ = false;
+    std::thread thread_;
 };
 
 } // namespace rmcs

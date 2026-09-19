@@ -22,6 +22,7 @@ constexpr int kChannels = 18;
 constexpr int kCandidates = 6300;
 // 后处理只需要少量高质量候选；限制规模可避免异常模型输出拖慢实时线程。
 constexpr std::size_t kMaxPostprocessCandidates = 256;
+constexpr int kGpuCandidateCapacity = 512;
 
 class Logger final : public nvinfer1::ILogger {
 public:
@@ -48,11 +49,13 @@ struct RuneDetector::Impl {
     cudaStream_t stream = nullptr;
     void* input_device = nullptr;
     void* output_device = nullptr;
-    std::vector<float> output_host;
+    float* output_host = nullptr;
+    gpu::DetectionCandidate* filtered_host = nullptr;
+    int* filtered_count_host = nullptr;
+    gpu::Point* gpu_points_host = nullptr;
+    gpu::RefineResult* refined_host = nullptr;
     std::vector<Candidate> candidates;
     std::vector<Candidate> selected;
-    std::vector<gpu::Point> gpu_points;
-    std::vector<gpu::RefineResult> refined;
     const char* input_name = nullptr;
     const char* output_name = nullptr;
     std::string loaded_engine_path;
@@ -62,6 +65,11 @@ struct RuneDetector::Impl {
         if (stream) cudaStreamDestroy(stream);
         if (input_device) cudaFree(input_device);
         if (output_device) cudaFree(output_device);
+        if (output_host) cudaFreeHost(output_host);
+        if (filtered_host) cudaFreeHost(filtered_host);
+        if (filtered_count_host) cudaFreeHost(filtered_count_host);
+        if (gpu_points_host) cudaFreeHost(gpu_points_host);
+        if (refined_host) cudaFreeHost(refined_host);
     }
 };
 
@@ -79,6 +87,11 @@ auto RuneDetector::initialize() noexcept -> bool {
     if (impl_->stream) { cudaStreamDestroy(impl_->stream); impl_->stream = nullptr; }
     if (impl_->input_device) { cudaFree(impl_->input_device); impl_->input_device = nullptr; }
     if (impl_->output_device) { cudaFree(impl_->output_device); impl_->output_device = nullptr; }
+    if (impl_->output_host) { cudaFreeHost(impl_->output_host); impl_->output_host = nullptr; }
+    if (impl_->filtered_host) { cudaFreeHost(impl_->filtered_host); impl_->filtered_host = nullptr; }
+    if (impl_->filtered_count_host) { cudaFreeHost(impl_->filtered_count_host); impl_->filtered_count_host = nullptr; }
+    if (impl_->gpu_points_host) { cudaFreeHost(impl_->gpu_points_host); impl_->gpu_points_host = nullptr; }
+    if (impl_->refined_host) { cudaFreeHost(impl_->refined_host); impl_->refined_host = nullptr; }
     impl_->context.reset();
     impl_->engine.reset();
     impl_->runtime.reset();
@@ -122,14 +135,21 @@ auto RuneDetector::initialize() noexcept -> bool {
         output_dims.nbDims != 3 || output_dims.d[0] != 1 ||
         output_dims.d[1] != kChannels || output_dims.d[2] != kCandidates) return false;
 
-    impl_->output_host.resize(kChannels * kCandidates);
+    constexpr auto output_count = static_cast<std::size_t>(kChannels) * kCandidates;
     if (cudaMalloc(&impl_->input_device, 3 * kInputHeight * kInputWidth * sizeof(float)) != cudaSuccess ||
-        cudaMalloc(&impl_->output_device, impl_->output_host.size() * sizeof(float)) != cudaSuccess ||
+        cudaMalloc(&impl_->output_device, output_count * sizeof(float)) != cudaSuccess ||
+        cudaMallocHost(reinterpret_cast<void**>(&impl_->output_host),
+            output_count * sizeof(float)) != cudaSuccess ||
+        cudaMallocHost(reinterpret_cast<void**>(&impl_->filtered_host),
+            kGpuCandidateCapacity * sizeof(gpu::DetectionCandidate)) != cudaSuccess ||
+        cudaMallocHost(reinterpret_cast<void**>(&impl_->filtered_count_host), sizeof(int)) != cudaSuccess ||
+        cudaMallocHost(reinterpret_cast<void**>(&impl_->gpu_points_host),
+            kGpuCandidateCapacity * kPoints * sizeof(gpu::Point)) != cudaSuccess ||
+        cudaMallocHost(reinterpret_cast<void**>(&impl_->refined_host),
+            kGpuCandidateCapacity * sizeof(gpu::RefineResult)) != cudaSuccess ||
         cudaStreamCreate(&impl_->stream) != cudaSuccess) return false;
     impl_->candidates.reserve(kCandidates);
     impl_->selected.reserve(32);
-    impl_->gpu_points.reserve(32 * kPoints);
-    impl_->refined.reserve(32);
     const bool bound = impl_->context->setTensorAddress(impl_->input_name, impl_->input_device) &&
                        impl_->context->setTensorAddress(impl_->output_name, impl_->output_device);
     if (bound) impl_->loaded_engine_path = config.engine_path;
@@ -153,45 +173,67 @@ auto RuneDetector::detect(const cv::Mat& image) noexcept -> Elements {
                                         impl_->stream)) return {};
 
     if (!impl_->context->enqueueV3(impl_->stream)) return {};
-    if (cudaMemcpyAsync(impl_->output_host.data(), impl_->output_device,
-            impl_->output_host.size() * sizeof(float), cudaMemcpyDeviceToHost, impl_->stream)
-        != cudaSuccess) return {};
-    if (cudaStreamSynchronize(impl_->stream) != cudaSuccess) return {};
-
-    const float* output_data = impl_->output_host.data();
     auto& candidates = impl_->candidates;
     candidates.clear();
-    for (int column = 0; column < kCandidates; ++column) {
-        int class_id = 0;
-        float score = output_data[column];
-        for (int c = 1; c < kClasses; ++c) {
-            const float value = output_data[c * kCandidates + column];
-            if (value > score) { score = value; class_id = c; }
-        }
-        if (score < config.score_threshold) continue;
-        Candidate item{class_id, score, {}, {}, 0.0F, {}};
-        int valid_points = 0;
-        float valid_score_sum = 0.0F;
-        cv::Point2f valid_center{};
-        bool in_bounds = true;
-        for (int p = 0; p < kPoints; ++p) {
-            const int base = kClasses + p * 3;
-            const float x = (output_data[(base + 0) * kCandidates + column] - pad_x) / scale;
-            const float y = (output_data[(base + 1) * kCandidates + column] - pad_y) / scale;
-            const float point_score = output_data[(base + 2) * kCandidates + column];
-            item.points[p] = {x, y};
-            item.point_scores[p] = point_score;
-            if (point_score >= config.keypoint_threshold) {
-                ++valid_points;
-                valid_score_sum += point_score;
-                valid_center += item.points[p];
+    const auto filtered = impl_->gpu_pipeline.filter_candidates(
+        static_cast<const float*>(impl_->output_device), config.score_threshold,
+        config.keypoint_threshold, scale, pad_x, pad_y, image.cols, image.rows,
+        impl_->filtered_host, impl_->filtered_count_host, kGpuCandidateCapacity, impl_->stream);
+    if (filtered && cudaStreamSynchronize(impl_->stream) != cudaSuccess) return {};
+
+    if (filtered && *impl_->filtered_count_host <= kGpuCandidateCapacity) {
+        const auto count = std::max(0, *impl_->filtered_count_host);
+        candidates.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            const auto& source = impl_->filtered_host[i];
+            auto item = Candidate { source.class_id, source.score, {}, {},
+                source.quality, { source.nms_center.x, source.nms_center.y } };
+            for (int p = 0; p < kPoints; ++p) {
+                item.points[p] = { source.points[p].x, source.points[p].y };
+                item.point_scores[p] = source.point_scores[p];
             }
-            in_bounds &= x >= 0 && x < image.cols && y >= 0 && y < image.rows;
-        }
-        if (valid_points >= 3 && in_bounds) {
-            item.quality = item.score * (valid_score_sum / valid_points);
-            item.nms_center = valid_center * (1.0F / valid_points);
             candidates.push_back(item);
+        }
+    } else {
+        // Preserve exact behavior for pathological frames with more than the
+        // bounded GPU result capacity, and when the prefilter cannot launch.
+        constexpr auto output_count = static_cast<std::size_t>(kChannels) * kCandidates;
+        if (cudaMemcpyAsync(impl_->output_host, impl_->output_device,
+                output_count * sizeof(float), cudaMemcpyDeviceToHost, impl_->stream) != cudaSuccess
+            || cudaStreamSynchronize(impl_->stream) != cudaSuccess) return {};
+        const float* output_data = impl_->output_host;
+        for (int column = 0; column < kCandidates; ++column) {
+            int class_id = 0;
+            float score = output_data[column];
+            for (int c = 1; c < kClasses; ++c) {
+                const float value = output_data[c * kCandidates + column];
+                if (value > score) { score = value; class_id = c; }
+            }
+            if (score < config.score_threshold) continue;
+            Candidate item{class_id, score, {}, {}, 0.0F, {}};
+            int valid_points = 0;
+            float valid_score_sum = 0.0F;
+            cv::Point2f valid_center{};
+            bool in_bounds = true;
+            for (int p = 0; p < kPoints; ++p) {
+                const int base = kClasses + p * 3;
+                const float x = (output_data[(base + 0) * kCandidates + column] - pad_x) / scale;
+                const float y = (output_data[(base + 1) * kCandidates + column] - pad_y) / scale;
+                const float point_score = output_data[(base + 2) * kCandidates + column];
+                item.points[p] = {x, y};
+                item.point_scores[p] = point_score;
+                if (point_score >= config.keypoint_threshold) {
+                    ++valid_points;
+                    valid_score_sum += point_score;
+                    valid_center += item.points[p];
+                }
+                in_bounds &= x >= 0 && x < image.cols && y >= 0 && y < image.rows;
+            }
+            if (valid_points >= 3 && in_bounds) {
+                item.quality = item.score * (valid_score_sum / valid_points);
+                item.nms_center = valid_center * (1.0F / valid_points);
+                candidates.push_back(item);
+            }
         }
     }
 
@@ -219,15 +261,13 @@ auto RuneDetector::detect(const cv::Mat& image) noexcept -> Elements {
     Elements result;
     result.icons.reserve(selected.size());
     result.bullseyes.reserve(selected.size());
-    auto& gpu_points = impl_->gpu_points;
-    auto& refined = impl_->refined;
-    gpu_points.resize(selected.size() * kPoints);
-    refined.resize(selected.size());
+    if (selected.size() > kGpuCandidateCapacity) return result;
     for (std::size_t i = 0; i < selected.size(); ++i)
         for (int p = 0; p < kPoints; ++p)
-            gpu_points[i * kPoints + p] = {selected[i].points[p].x, selected[i].points[p].y};
+            impl_->gpu_points_host[i * kPoints + p] =
+                {selected[i].points[p].x, selected[i].points[p].y};
     const bool refinement_launched = impl_->gpu_pipeline.refine(
-        gpu_points.data(), static_cast<int>(selected.size()), refined.data(),
+        impl_->gpu_points_host, static_cast<int>(selected.size()), impl_->refined_host,
         config.refine_radius, config.icon_refine_radius, config.max_refine_shift,
         config.min_refine_gradient, impl_->stream);
     const bool refinement_ready = refinement_launched &&
@@ -238,9 +278,10 @@ auto RuneDetector::detect(const cv::Mat& image) noexcept -> Elements {
         // Prefer OpenCV local refinement. When local image evidence is
         // insufficient, retain the neural detector's original semantic points.
         auto points = item.points;
-        if (refinement_ready && refined[i].valid)
+        if (refinement_ready && impl_->refined_host[i].valid)
             for (int p = 0; p < kPoints; ++p)
-                points[p] = {refined[i].points[p].x, refined[i].points[p].y};
+                points[p] = {impl_->refined_host[i].points[p].x,
+                    impl_->refined_host[i].points[p].y};
         // Tracker contract: icon R; corners top,left,bottom,right; activation.
         // P1-4：保留 3 类激活信息（0=未激活, 1=小符激活, 2=大符激活），不再合并为 bool。
         const auto activation =

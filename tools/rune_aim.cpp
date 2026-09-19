@@ -1,11 +1,11 @@
-// rune_aim —— 统一命令行入口（video / virtual / camera 三模式）
+// rune_aim —— 统一命令行入口（video / fixed_video / virtual / camera）
 //
 // 用法：
 //   ./build/rune_aim -c config/rune_small_video.yaml
 //   ./build/rune_aim -c config/rune_large_virtual.yaml --no-display
 //   ./build/rune_aim -c config/camera_sentry.yaml --mode camera --source 0
 //
-// 覆盖项（其余参数一律进 yaml）：--mode --source --max-frames --no-display
+// 覆盖项（其余参数一律进 yaml）：--mode --source --max-frames --output --no-display
 // 按键：q/ESC 退出，空格 暂停，s 截图，v 切换可视化
 //
 // 链路：数据源(视频/虚拟符/相机) → RuneDetector(视频/相机) 或 VirtualRune
@@ -29,12 +29,14 @@
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -50,6 +52,7 @@ struct Cli {
     std::string config = "config/rune_small_virtual.yaml";
     std::string mode;            // 空 = 用 yaml
     std::string source;          // 空 = 用 yaml
+    std::string output;          // 空 = 不保存标注视频
     int max_frames = -1;         // -1 = 用 yaml
     bool no_display = false;
     bool ros = false;
@@ -68,6 +71,7 @@ auto parse_cli(int argc, char** argv) -> Cli {
         if (a == "-c" || a == "--config") cli.config = next("--config");
         else if (a == "--mode") cli.mode = next("--mode");
         else if (a == "--source") cli.source = next("--source");
+        else if (a == "--output") cli.output = next("--output");
         else if (a == "--max-frames") cli.max_frames = std::atoi(next("--max-frames"));
         else if (a == "--ros-image-fps") {
             char* end = nullptr;
@@ -82,8 +86,9 @@ auto parse_cli(int argc, char** argv) -> Cli {
         else if (a == "--ros") cli.ros = true;
         else if (a == "--no-display") cli.no_display = true;
         else if (a == "-h" || a == "--help") {
-            std::printf("用法: rune_aim -c <config.yaml> [--mode video|virtual|camera]"
-                        " [--source <path|dev>] [--max-frames N] [--no-display] [--ros] [--ros-image-fps 15]\n");
+            std::printf("用法: rune_aim -c <config.yaml> [--mode video|fixed_video|virtual|camera]"
+                        " [--source <path|dev>] [--output <video.mp4>] [--max-frames N]"
+                        " [--no-display] [--ros] [--ros-image-fps 15]\n");
             std::exit(0);
         } else {
             std::fprintf(stderr, "未知参数: %s\n", a.c_str());
@@ -139,12 +144,15 @@ int main(int argc, char** argv) {
 #endif
 
     const bool is_virtual = cfg.input.mode == "virtual";
-    const bool is_video   = cfg.input.mode == "video";
+    const bool is_video   = cfg.input.mode == "video" || cfg.input.mode == "fixed_video";
+    const bool is_fixed_video = cfg.input.mode == "fixed_video";
     const bool is_camera  = cfg.input.mode == "camera";
     if (!is_virtual && !is_video && !is_camera) {
-        std::fprintf(stderr, "未知 mode: %s（可选 video|virtual|camera）\n", cfg.input.mode.c_str());
+        std::fprintf(stderr, "未知 mode: %s（可选 video|fixed_video|virtual|camera）\n",
+            cfg.input.mode.c_str());
         return 2;
     }
+    const bool render_frames = cfg.display.enabled || !cli.output.empty();
 
     // ---- 检测器（video/camera 需要；virtual 不需要 GPU）----
     RuneDetector detector;
@@ -198,8 +206,7 @@ int main(int argc, char** argv) {
             vcfg.large ? "LARGE" : "SMALL");
     } else {
         const std::string src = cfg.input.source.empty() ? "data/rune_test_h264.mp4" : cfg.input.source;
-        // 视频模式的合成帧率从 yaml 的 input.video_fps 读取（避免 Jetson GStreamer 的
-        // CAP_PROP_FPS 查询干扰解码器）；0 或越界时由 FrameSource 回退到 30。
+        // 视频时间优先使用逐帧 PTS；input.video_fps 仅用于 PTS 缺失时外推。
         double video_fps = cfg.input.video_fps;
         if (video_fps <= 0.0 || video_fps > 1000.0) video_fps = 30.0;
         source = is_camera ? make_camera_source(src, cfg.camera.capture_width, cfg.camera.capture_height,
@@ -210,19 +217,29 @@ int main(int argc, char** argv) {
             return 4;
         }
         std::printf("[aim] source: %s%s\n", source->name().c_str(),
-            is_video ? cv::format(" (fps %.2f)", video_fps).c_str() : "");
+            is_video ? cv::format(" (PTS timestamps, fallback fps %.2f)", video_fps).c_str() : "");
+        if (is_fixed_video) {
+            std::printf("[aim] camera pose: FIXED (camera.transform; no IMU updates)\n");
+        }
     }
 
     // ---- 主循环 ----
     const auto window = "rune_aim";
     if (cfg.display.enabled) cv::namedWindow(window, cv::WINDOW_AUTOSIZE);
+    cv::VideoWriter output_video;
+    int output_frames = 0;
+    double output_fps = is_virtual ? cfg.input.hz
+        : is_camera ? cfg.camera.capture_fps : cfg.input.video_fps;
+    if (!std::isfinite(output_fps) || output_fps <= 0.0 || output_fps > 1000.0)
+        output_fps = 30.0;
 
     bool rune_inited = false;
     Timestamp rune_stamp{};
     Timestamp rune_corrected_stamp{};
     Timestamp last_now{};
     double dt = 1.0 / cfg.input.hz;
-    int frame_id = 0, init_count = 0, aim_count = 0, fire_count = 0;
+    int frame_id = 0, init_count = 0, aim_count = 0;
+    int fire_count = 0, shot_count = 0, hit_count = 0;
     bool paused = false;
     bool tracking_corrected = false;
     bool last_fire = false;
@@ -231,6 +248,9 @@ int main(int argc, char** argv) {
     int fps_frames = 0;
     auto fps_stamp = std::chrono::steady_clock::now();
     RuneFireControl::Command last_cmd{};  // 主循环计算，可视化只读，避免重复推进火控状态机
+    std::multimap<Timestamp, Point3d> pending_hits;
+    std::vector<Point3d> frame_hits;
+    cv::Mat last_display;
     // Reuse per-frame containers to avoid allocator churn in the real-time loop.
     std::vector<RuneIcon> icons;
     std::vector<RuneBullseye> bullseyes;
@@ -267,12 +287,19 @@ int main(int argc, char** argv) {
         }
         if (std::chrono::duration<double>(now - rune_corrected_stamp).count() > 1.5) {
             rune_inited = false;
+            fire.reset();
+            last_fire = false;
             return;
         }
         model.predict(dt, now);
         rune_stamp = now;
         const bool corrected = model.correct(icons, bullseyes);
-        if (model.diverged()) { rune_inited = false; return; }
+        if (model.diverged()) {
+            rune_inited = false;
+            fire.reset();
+            last_fire = false;
+            return;
+        }
         if (corrected) rune_corrected_stamp = now;
         tracking_corrected = corrected;
 
@@ -283,15 +310,22 @@ int main(int argc, char** argv) {
         if (cmd.found) {
             ++aim_count;
             if (cmd.fire) ++fire_count;
+            if (cmd.shot_started) ++shot_count;
         }
         diag.push_observation(now, state.rotation_angle);
-        if (cmd.found && cmd.fire) {
+        if (cmd.found && cmd.shot_started) {
             const auto hit_dt = cfg.fire.algorithmic_delay + cfg.fire.shoot_delay + cmd.fly_time;
             auto clone = state;
             clone.transition(hit_dt);
             diag.push_predict(now + std::chrono::duration_cast<Timestamp::duration>(
                                       std::chrono::duration<double>(hit_dt)),
                 clone.rotation_angle);
+            if (render_frames && cfg.display.hitpoint && cmd.has_attack_point) {
+                pending_hits.emplace(
+                    now + std::chrono::duration_cast<Timestamp::duration>(
+                              std::chrono::duration<double>(hit_dt)),
+                    cmd.attack_point);
+            }
         }
 
         // ---- 终端输出 ----
@@ -310,18 +344,26 @@ int main(int argc, char** argv) {
         ros_image = ros && ros->image_due();
 #endif
         if (cfg.input.max_frames > 0 && frame_id >= cfg.input.max_frames) break;
+        if (paused) {
+            const auto key = cv::waitKey(10);
+            if (key == 'q' || key == 27) break;
+            if (key == ' ') paused = false;
+            if (key == 's' && !last_display.empty())
+                cv::imwrite(cv::format("shot_%04d.png", frame_id), last_display);
+            continue;
+        }
 
         // 每帧的时间戳由各分支确定：虚拟模式用挂钟，video/camera 用帧**自带的采集时刻**。
         // 后者是本次改动的要点——此前在循环顶部取 Clock::now()，而流水线当轮处理的是
         // 上一轮采集的帧，观测被贴上晚一个帧周期的时间戳，EKF 状态因此系统性滞后。
         Timestamp now {};
+        Timestamp following_stamp {}; // 下一视频帧时间，用于按真实帧间隔选择命中帧
         cv::Mat frame;  // 仅可视化用；与源共享像素，不拷贝
         icons.clear();
         bullseyes.clear();
         bool last_frame = false;
 
         if (is_virtual) {
-            if (paused) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
             now = Clock::now();
             if (sim_start == Timestamp{}) sim_start = now;
             const auto t_sec = std::chrono::duration<double>(now - sim_start).count();
@@ -353,7 +395,7 @@ int main(int argc, char** argv) {
             });
             // 画布尺寸跟随标定画幅：此前写死 960×540 与内参 (cx=720,cy=540) 不符，
             // 关键点会画到画布外看不见。
-            if (cfg.display.enabled || ros_image)
+            if (render_frames || ros_image)
                 frame = cv::Mat::zeros(cfg.camera.image_height, cfg.camera.image_width, CV_8UC3);
         } else {
             // 单深度流水线：检测第 N+1 帧的同时跑第 N 帧的 EKF/火控。
@@ -373,13 +415,16 @@ int main(int argc, char** argv) {
             // 先把下一帧丢进检测线程，再处理本帧，两者重叠。
             auto next = source->grab();
             last_frame = !next.valid();
-            if (!last_frame) detect_worker->submit(std::move(next));
+            if (!last_frame) {
+                following_stamp = next.stamp;
+                detect_worker->submit(std::move(next));
+            }
 
             icons = std::move(elements.icons);
             bullseyes = std::move(elements.bullseyes);
             now = done.stamp;
             // 浅拷贝，与 Frame 共享像素；真正的拷贝只在开了可视化时的 clone() 发生。
-            if ((cfg.display.enabled || ros_image) && done.valid()) frame = *done.image;
+            if ((render_frames || ros_image) && done.valid()) frame = *done.image;
         }
 
         // ---- 时间步进 ----
@@ -391,6 +436,20 @@ int main(int argc, char** argv) {
         last_now = now;
         if (!paused) run_frame(icons, bullseyes, now);
 
+        frame_hits.clear();
+        // 用当前帧与下一帧的真实时间中点做边界，VFR 下仍选择最接近命中时刻的帧。
+        auto hit_boundary = now;
+        if (following_stamp > now) {
+            hit_boundary = now + (following_stamp - now) / 2;
+        } else if (is_virtual) {
+            hit_boundary = now + std::chrono::duration_cast<Timestamp::duration>(
+                                     std::chrono::duration<double>(0.5 / cfg.input.hz));
+        }
+        while (!pending_hits.empty() && pending_hits.begin()->first <= hit_boundary) {
+            frame_hits.push_back(pending_hits.begin()->second);
+            pending_hits.erase(pending_hits.begin());
+        }
+
 #ifdef RUNE_ENABLE_ROS2
         if (ros) {
             const auto state = rune_inited ? std::optional(model.state()) : std::nullopt;
@@ -399,22 +458,32 @@ int main(int argc, char** argv) {
         }
 #endif
         // ---- 可视化（统一 draw 层）----
-        if (cfg.display.enabled && !frame.empty()) {
+        if (render_frames && !frame.empty()) {
             cv::Mat display = frame.clone();
             debug::DrawOptions opt{
                 .keypoints = cfg.display.keypoints,
                 .aimpoint = cfg.display.aimpoint,
+                .hitpoint = cfg.display.hitpoint,
                 .state_text = cfg.display.state_text,
                 .error_text = cfg.display.error_text,
             };
             if (opt.keypoints) debug::draw_detection(display, icons, bullseyes);
             if (rune_inited) {
                 const auto& cmd = last_cmd;  // 复用主循环结果，不重复调用 fire.update
-                if (opt.aimpoint && tracking_corrected) {
+                if (opt.aimpoint && tracking_corrected && cmd.found) {
                     debug::draw_aimpoint(display, model.state(),
-                        cfg.fire.algorithmic_delay + cfg.fire.shoot_delay + cmd.fly_time, cfg.camera.matrix);
+                        cfg.fire.algorithmic_delay + cfg.fire.shoot_delay + cmd.fly_time,
+                        cfg.camera.matrix, cfg.camera.distortion, model_pose);
                 }
                 if (opt.state_text || opt.error_text) debug::draw_status(display, cmd, diag.stats(), opt);
+            }
+            // 已发出的弹丸即使后续丢失跟踪，也应在其预计命中帧保留落点回放。
+            if (opt.hitpoint) {
+                for (const auto& hitpoint : frame_hits) {
+                    if (debug::draw_hitpoint(display, hitpoint, cfg.camera.matrix,
+                            cfg.camera.distortion, model_pose))
+                        ++hit_count;
+                }
             }
             // 每约半秒更新一次，避免瞬时值抖动；文字始终显示在左上角。
             ++fps_frames;
@@ -425,13 +494,31 @@ int main(int argc, char** argv) {
                 fps_frames = 0;
                 fps_stamp = fps_now;
             }
-            cv::putText(display, cv::format("FPS: %.1f", display_fps), cv::Point(20, 115),
-                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
-            cv::imshow(window, display);
-            const auto key = cv::waitKey(1);
-            if (key == 'q' || key == 27) break;
-            if (key == ' ') paused = !paused;
-            if (key == 's') cv::imwrite(cv::format("shot_%04d.png", frame_id), display);
+            if (cfg.display.enabled) {
+                cv::putText(display, cv::format("PROC FPS: %.1f", display_fps), cv::Point(20, 115),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
+            }
+            if (!cli.output.empty()) {
+                if (!output_video.isOpened()) {
+                    const auto fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+                    if (!output_video.open(cli.output, fourcc, output_fps, display.size(), true)) {
+                        std::fprintf(stderr, "无法创建输出视频: %s\n", cli.output.c_str());
+                        return 5;
+                    }
+                    std::printf("[aim] recording: %s (%.3f FPS, %dx%d)\n",
+                        cli.output.c_str(), output_fps, display.cols, display.rows);
+                }
+                output_video.write(display);
+                ++output_frames;
+            }
+            if (cfg.display.enabled) {
+                last_display = display;
+                cv::imshow(window, display);
+                const auto key = cv::waitKey(1);
+                if (key == 'q' || key == 27) break;
+                if (key == ' ') paused = !paused;
+                if (key == 's') cv::imwrite(cv::format("shot_%04d.png", frame_id), display);
+            }
         }
         ++frame_id;
         if (last_frame) break;  // 数据源已耗尽：本帧处理并显示完再退出
@@ -449,6 +536,11 @@ int main(int argc, char** argv) {
     std::printf("  init_ok     : %d\n", init_count);
     std::printf("  aim_ok      : %d\n", aim_count);
     std::printf("  fire_frames : %d\n", fire_count);
+    std::printf("  shot_events : %d\n", shot_count);
+    std::printf("  hit_markers : %d\n", hit_count);
+    if (!cli.output.empty())
+        std::printf("  output_video: %s (%d frames @ %.3f FPS)\n",
+            cli.output.c_str(), output_frames, output_fps);
     if (is_virtual && gimbal.enable) {
         std::printf("  gimbal      : yaw=%.1fdeg@%.2fHz pitch=%.1fdeg@%.2fHz "
                     "delay=%.3fs noise=%.3fdeg\n",

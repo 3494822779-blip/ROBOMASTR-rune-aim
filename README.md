@@ -12,6 +12,8 @@
 ./build/rune_aim -c config/rune_large_virtual.yaml   # 大符（正弦）虚拟符闭环
 ./build/rune_aim -c config/rune_gimbal_virtual.yaml  # 云台运动仿真（验证外参时变链路，无 GPU）
 ./build/rune_aim -c config/rune_video.yaml           # 视频回放（需 GPU 引擎 + 图形会话）
+./build/rune_aim -c config/rune_fixed_video.yaml     # 固定视角视频，仅显示预测落点（不使用陀螺仪）
+./build/rune_aim -c config/rune_fixed_video.yaml --no-display --output rune_fixed_video_result.mp4
 ./build/rune_aim -c config/camera_sentry.yaml        # 真机相机（替换标定值后使用）
 ```
 
@@ -44,7 +46,7 @@ template.yaml 一处即可全局生效；启动日志打印 base/scene 两层与
 
 | 段 | 对应 | 关键项 |
 |---|---|---|
-| `input` | 数据源 | `mode: video\|virtual\|camera`、`source`、`max_frames`、`hz` |
+| `input` | 数据源 | `mode: video\|fixed_video\|virtual\|camera`、`source`、`max_frames`、`hz` |
 | `camera` | 标定 | `matrix`(9) `distortion`(5) `transform`(t+q，相机→Odom) |
 | `detect` | RuneDetector::Config | `engine`、`score_threshold`、`keypoint_threshold`、`center_distance`、细化参数 |
 | `track` | RuneModel::Config | `noise_observation`、`gate_threshold`、初始化门限 |
@@ -57,7 +59,7 @@ template.yaml 一处即可全局生效；启动日志打印 base/scene 两层与
 
 | 工具 | 用途 | 示例 |
 |---|---|---|
-| `rune_aim` | 统一入口（video/virtual/camera 三模式 + 可视化调试） | `./build/rune_aim -c config/rune_small_virtual.yaml --no-display` |
+| `rune_aim` | 统一入口（video/fixed_video/virtual/camera + 可视化调试） | `./build/rune_aim -c config/rune_small_virtual.yaml --no-display` |
 | `rune_bench` | 检测器性能基准 | `./build/rune_bench <engine> <video> [max_frames] [score_thr] [keypoint_thr]` |
 | `delay_calib` | 链路延迟互相关标定 | `./build/delay_calib 120 2 30` |
 | `camera_calib` | 棋盘格相机内参标定 | `./build/camera_calib --cols 9 --rows 6 --square-mm 25` |

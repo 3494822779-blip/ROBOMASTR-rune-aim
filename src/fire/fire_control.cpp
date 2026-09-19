@@ -54,7 +54,8 @@ struct RuneFireControl::Impl {
 
     // 瞄准点外推 + 弹道固定点迭代。返回 false 表示弹道无解。
     auto aim_and_ballistic(const RuneModel::State& state, double& yaw, double& pitch,
-        double& fly_time, bool& has_blade, Vector3d& ff_v, Vector3d& ff_a) -> bool {
+        double& fly_time, Point3d& attack_point, bool& has_blade,
+        Vector3d& ff_v, Vector3d& ff_a) -> bool {
 
         if (!std::isfinite(config.bullet_speed) || config.bullet_speed <= 0.0 ||
             !std::isfinite(config.max_fly_time) || config.max_fly_time <= 0.0 ||
@@ -92,6 +93,7 @@ struct RuneFireControl::Impl {
 
             solution.input.v0    = config.bullet_speed;
             solution.input.point = attack;
+            attack_point         = attack;
 
             const auto result = solution.solve();
             if (!result) return false;
@@ -135,6 +137,7 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     // firing state machine. A single NaN must never result in a fire command.
     if (!std::isfinite(state.x) || !std::isfinite(state.y) || !std::isfinite(state.z) ||
         !std::isfinite(state.rotation_angle) || !std::isfinite(state.rotation_speed)) {
+        reset();
         auto cmd = Command{};
         cmd.state = State::LOST;
         cmd.reason = "invalid tracker state";
@@ -183,10 +186,11 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
 
     // ---- 瞄准与弹道解算 ----
     double yaw = 0.0, pitch = 0.0, fly_time = 0.0;
+    Point3d attack_point = Point3d::kZero();
     bool has_blade = false;
     Vector3d ff_v = Vector3d::kZero(), ff_a = Vector3d::kZero();
     const bool ballistic_ok =
-        im.aim_and_ballistic(state, yaw, pitch, fly_time, has_blade, ff_v, ff_a);
+        im.aim_and_ballistic(state, yaw, pitch, fly_time, attack_point, has_blade, ff_v, ff_a);
     im.last_yaw   = yaw;
     im.last_pitch = pitch;
 
@@ -200,6 +204,8 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     cmd.pitch         = pitch;
     cmd.ff_v          = ff_v;
     cmd.ff_a          = ff_a;
+    cmd.attack_point  = attack_point;
+    cmd.has_attack_point = ballistic_ok && has_blade;
 
     // ---- 数据过期：平滑回符心 ----
     if (!ballistic_ok) {
@@ -276,6 +282,7 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
 
     if (im.state == State::READY && has_blade && pitch_ok && time_ok) {
         cmd.fire       = true;
+        cmd.shot_started = true;
         im.state       = State::FIRING;
         im.firing_time = dt;
         cmd.state      = State::FIRING;

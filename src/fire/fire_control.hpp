@@ -60,9 +60,12 @@ public:
     struct Command {
         bool   found    = false;  // 目标是否可用
         bool   fire     = false;  // 是否允许开火
+        bool   shot_started = false; // 开火窗口上升沿（无拨弹反馈时作为发射事件）
         double yaw      = 0.0;    // rad，Odom 系
         double pitch    = 0.0;    // rad，Odom 系
         double fly_time = 0.0;    // s
+        Point3d attack_point = Point3d::kZero(); // 固定点迭代最终使用的目标点
+        bool has_attack_point = false;
         // P2-8：云台角速度/角加速度前馈（命中时刻符叶的射线运动，实车动态跟踪用）
         Vector3d ff_v = Vector3d::kZero();
         Vector3d ff_a = Vector3d::kZero();

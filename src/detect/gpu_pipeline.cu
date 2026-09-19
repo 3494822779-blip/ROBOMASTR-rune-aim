@@ -103,6 +103,54 @@ __global__ void refine_kernel(const unsigned char* image, std::size_t pitch, int
         if(dx*dx+dy*dy>max_shift*max_shift) valid=false; }
     value.valid=valid; results[i]=value;
 }
+
+__global__ void filter_candidates_kernel(const float* output, float score_threshold,
+        float keypoint_threshold, float scale, int pad_x, int pad_y,
+        int image_width, int image_height, DetectionCandidate* candidates,
+        int* candidate_count, int capacity) {
+    constexpr int classes = 3;
+    constexpr int points = 5;
+    constexpr int columns = 6300;
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= columns) return;
+
+    int class_id = 0;
+    float score = output[column];
+    for (int c = 1; c < classes; ++c) {
+        const float value = output[c * columns + column];
+        if (value > score) { score = value; class_id = c; }
+    }
+    if (score < score_threshold) return;
+
+    DetectionCandidate item{};
+    item.class_id = class_id;
+    item.score = score;
+    int valid_points = 0;
+    float valid_score_sum = 0.0F;
+    Point valid_center{};
+    bool in_bounds = true;
+    for (int p = 0; p < points; ++p) {
+        const int base = classes + p * 3;
+        const float x = (output[(base + 0) * columns + column] - pad_x) / scale;
+        const float y = (output[(base + 1) * columns + column] - pad_y) / scale;
+        const float point_score = output[(base + 2) * columns + column];
+        item.points[p] = { x, y };
+        item.point_scores[p] = point_score;
+        if (point_score >= keypoint_threshold) {
+            ++valid_points;
+            valid_score_sum += point_score;
+            valid_center.x += x;
+            valid_center.y += y;
+        }
+        in_bounds = in_bounds && x >= 0 && x < image_width && y >= 0 && y < image_height;
+    }
+    if (valid_points < 3 || !in_bounds) return;
+
+    item.quality = score * (valid_score_sum / valid_points);
+    item.nms_center = { valid_center.x / valid_points, valid_center.y / valid_points };
+    const int index = atomicAdd(candidate_count, 1);
+    if (index < capacity) candidates[index] = item;
+}
 }
 
 RuneGpuPipeline::~RuneGpuPipeline(){
@@ -111,6 +159,8 @@ RuneGpuPipeline::~RuneGpuPipeline(){
     if (image_) cudaFree(image_);
     if (seeds_) cudaFree(seeds_);
     if (results_) cudaFree(results_);
+    if (candidates_) cudaFree(candidates_);
+    if (candidate_count_) cudaFree(candidate_count_);
 }
 auto RuneGpuPipeline::upload_bgr(const unsigned char* host,int width,int height,std::size_t host_pitch,cudaStream_t stream)->bool{
     if (!host || width <= 0 || height <= 0 || host_pitch < static_cast<std::size_t>(width) * 3)
@@ -126,6 +176,34 @@ auto RuneGpuPipeline::upload_bgr(const unsigned char* host,int width,int height,
 auto RuneGpuPipeline::preprocess(float* tensor,int ow,int oh,float scale,int px,int py,cudaStream_t stream)->bool{
     preprocess_kernel<<<dim3((ow+15)/16,(oh+15)/16),dim3(16,16),0,stream>>>(image_,pitch_,width_,height_,tensor,ow,oh,scale,px,py);
     return cudaGetLastError()==cudaSuccess;
+}
+auto RuneGpuPipeline::filter_candidates(const float* output, float score_threshold,
+        float keypoint_threshold, float scale, int pad_x, int pad_y,
+        int image_width, int image_height, DetectionCandidate* host_candidates,
+        int* host_count, int capacity, cudaStream_t stream)->bool {
+    if (!output || !host_candidates || !host_count || capacity <= 0 || scale <= 0.0F)
+        return false;
+    if (capacity > candidate_capacity_) {
+        DetectionCandidate* new_candidates = nullptr;
+        if (cudaMalloc(&new_candidates,
+                static_cast<std::size_t>(capacity) * sizeof(DetectionCandidate)) != cudaSuccess)
+            return false;
+        cudaFree(candidates_);
+        candidates_ = new_candidates;
+        candidate_capacity_ = capacity;
+    }
+    if (!candidate_count_ && cudaMalloc(&candidate_count_, sizeof(int)) != cudaSuccess)
+        return false;
+    if (cudaMemsetAsync(candidate_count_, 0, sizeof(int), stream) != cudaSuccess) return false;
+    filter_candidates_kernel<<<(6300 + 255) / 256, 256, 0, stream>>>(output,
+        score_threshold, keypoint_threshold, scale, pad_x, pad_y, image_width, image_height,
+        candidates_, candidate_count_, capacity);
+    if (cudaGetLastError() != cudaSuccess) return false;
+    return cudaMemcpyAsync(host_count, candidate_count_, sizeof(int),
+               cudaMemcpyDeviceToHost, stream) == cudaSuccess
+        && cudaMemcpyAsync(host_candidates, candidates_,
+               static_cast<std::size_t>(capacity) * sizeof(DetectionCandidate),
+               cudaMemcpyDeviceToHost, stream) == cudaSuccess;
 }
 auto RuneGpuPipeline::refine(const Point* points,int target_count,RefineResult* host_results,int br,int ir,float shift,float grad,cudaStream_t stream)->bool{
     if(target_count<=0)return true;

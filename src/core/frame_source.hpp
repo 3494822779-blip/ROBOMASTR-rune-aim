@@ -36,8 +36,8 @@ public:
     virtual auto name() const -> std::string = 0;
 };
 
-// 视频文件回放。时间戳按 fps 匀速合成（fps <= 0 时取 30），
-// 使解码/推理耗时的抖动不进入 EKF 的 dt。打开失败返回 nullptr。
+// 视频文件回放。时间戳优先使用视频 PTS；PTS 无效时按 fps 外推（fps <= 0 时取 30），
+// 使解码/推理耗时的抖动不进入 EKF 的 dt，并支持可变帧率视频。打开失败返回 nullptr。
 auto make_video_source(const std::string& path, double fps) -> std::unique_ptr<FrameSource>;
 
 // 相机。source 为纯十进制整数时按设备索引打开，否则按字符串打开

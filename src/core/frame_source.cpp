@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <charconv>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <system_error>
 #include <utility>
 
@@ -45,7 +47,21 @@ public:
         cv::Mat raw;
         if (!capture_.read(raw) || raw.empty()) return {};
         if (index_ == 0) start_ = Clock::now();
-        const auto offset = std::chrono::duration<double> { static_cast<double>(index_) / fps_ };
+
+        // 文件回放优先使用容器/解码器给出的 PTS。只有 PTS 缺失、重复或回退时，
+        // 才按配置帧率从上一帧外推，避免可变帧率视频被强行当作恒定 FPS。
+        double offset_s = last_offset_s_ >= 0.0
+            ? last_offset_s_ + 1.0 / fps_
+            : static_cast<double>(index_) / fps_;
+        const double pts_ms = capture_.get(cv::CAP_PROP_POS_MSEC);
+        if (std::isfinite(pts_ms) && pts_ms >= 0.0) {
+            const double pts_s = pts_ms / 1000.0;
+            if (!std::isfinite(first_pts_s_)) first_pts_s_ = pts_s;
+            const double pts_offset_s = pts_s - first_pts_s_;
+            if (index_ == 0 || pts_offset_s > last_offset_s_) offset_s = pts_offset_s;
+        }
+        last_offset_s_ = offset_s;
+        const auto offset = std::chrono::duration<double> { offset_s };
         ++index_;
         return Frame { detach(raw), start_ + std::chrono::duration_cast<Duration>(offset) };
     }
@@ -57,6 +73,8 @@ private:
     bool opened_ = false;
     std::size_t index_ = 0;
     Timestamp start_ {};
+    double first_pts_s_ = std::numeric_limits<double>::quiet_NaN();
+    double last_offset_s_ = -1.0;
 };
 
 class CameraSource final : public FrameSource {

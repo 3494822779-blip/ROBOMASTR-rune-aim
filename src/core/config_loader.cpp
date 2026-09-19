@@ -152,6 +152,7 @@ auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
     cfg.display.enabled     = get_or(display, "enabled", cfg.display.enabled);
     cfg.display.keypoints   = get_or(display, "keypoints", cfg.display.keypoints);
     cfg.display.aimpoint    = get_or(display, "aimpoint", cfg.display.aimpoint);
+    cfg.display.hitpoint    = get_or(display, "hitpoint", cfg.display.hitpoint);
     cfg.display.state_text  = get_or(display, "state_text", cfg.display.state_text);
     cfg.display.error_text  = get_or(display, "error_text", cfg.display.error_text);
 }
@@ -244,10 +245,10 @@ void print_config(const AppConfig& cfg) {
             gim.yaw_amp, gim.yaw_freq, gim.pitch_amp, gim.pitch_freq,
             gim.transform_delay, gim.transform_noise);
     }
-    std::printf("[config] effective display: enabled=%s keypoints=%s aimpoint=%s "
+    std::printf("[config] effective display: enabled=%s keypoints=%s aimpoint=%s hitpoint=%s "
                 "state_text=%s error_text=%s\n",
         on_off(cfg.display.enabled), on_off(cfg.display.keypoints), on_off(cfg.display.aimpoint),
-        on_off(cfg.display.state_text), on_off(cfg.display.error_text));
+        on_off(cfg.display.hitpoint), on_off(cfg.display.state_text), on_off(cfg.display.error_text));
 }
 
 }  // namespace rmcs::cfg

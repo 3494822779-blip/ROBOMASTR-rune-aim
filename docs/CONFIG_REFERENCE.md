@@ -11,10 +11,11 @@
 
 | 参数 | 默认 | 含义 |
 |---|---|---|
-| `mode` | `virtual` | 数据源：`video`（视频文件）/ `virtual`（虚拟符，无 GPU）/ `camera`（真机相机） |
+| `mode` | `virtual` | 数据源：`video`（普通视频）/ `fixed_video`（固定外参视频，不使用 IMU）/ `virtual`（虚拟符，无 GPU）/ `camera`（真机相机） |
 | `source` | 空 | video: 视频路径（如 `data/rune_test_h264.mp4`）；camera: 设备索引字符串（`"0"`） |
 | `max_frames` | 0 | 最多处理帧数，0 = 不限 |
 | `hz` | 200 | virtual 模式仿真帧率（Hz），调高减小诊断配对离散误差 |
+| `video_fps` | 0 | 视频 PTS 缺失、重复或回退时的兜底帧率；正常文件按逐帧 PTS 支持可变帧率 |
 
 ## 2. camera —— 相机标定
 
@@ -124,6 +125,7 @@
 | `enabled` | true | false = 纯终端运行（无窗口，适合性能测试/无人值守） |
 | `keypoints` | true | 画检测关键点/符叶/R 标 + 激活类别文字 |
 | `aimpoint` | true | 画外推到命中时刻的预瞄点（黄色圆） |
+| `hitpoint` | false | 开火窗口上升沿登记一次，于预计命中时间最接近的视频帧画解算落点（红色 HIT） |
 | `state_text` | true | 画火控状态机文字（COOLING/READY/FIRING…，开火红色闪烁） |
 | `error_text` | true | 画诊断误差（mean/max/样本数） |
 

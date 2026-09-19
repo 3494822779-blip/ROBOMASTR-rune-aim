@@ -13,11 +13,11 @@
 namespace rmcs::cfg {
 
 struct InputConfig {
-    std::string mode = "virtual";  // video | virtual | camera
+    std::string mode = "virtual";  // video | fixed_video | virtual | camera
     std::string source;            // video: 视频路径 / camera: 设备索引 "0"
     int max_frames = 0;            // 0 = 不限
     double hz = 200.0;             // virtual 模式仿真帧率
-    double video_fps = 0.0;        // video 模式帧率（0 = 默认 30）
+    double video_fps = 0.0;        // 视频 PTS 无效时的兜底帧率（0 = 30）
 };
 
 struct CameraConfig {
@@ -83,6 +83,7 @@ struct DisplayConfig {
     bool enabled = true;
     bool keypoints = true;   // 检测关键点/符叶/R标
     bool aimpoint = true;    // 命中时刻预瞄点
+    bool hitpoint = false;   // 开火窗口开始后在预计命中帧回放落点
     bool state_text = true;  // 火控状态文字
     bool error_text = true;  // 诊断误差文字
 };

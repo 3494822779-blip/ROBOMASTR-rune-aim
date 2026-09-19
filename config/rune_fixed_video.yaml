@@ -1,0 +1,30 @@
+# 固定视角视频落点显示测试：相机外参全程固定，不读取或模拟陀螺仪。
+# 当前测试视频为 1280x768@79.519。下方内参由 template 的 1440x1080 参数
+# 按图像 x/y 比例缩放，仅适用于视频由该画幅直接缩放的情况；精度测试仍应换成真实标定。
+input:
+  mode: fixed_video
+  source: data/rune_test_h266_scaled_half.mp4
+  max_frames: 0
+  video_fps: 79.5194508   # 仅在视频 PTS 无效时兜底
+
+detect:
+  engine: model/Rune-v8n-fp16-20260624_b1_gpu0_fp16.engine
+
+camera:
+  matrix: [1244.44444444, 0, 640, 0, 995.55555556, 384, 0, 0, 1]
+  distortion: [0, 0, 0, 0, 0]
+  transform: [0, 0, 0, 1, 0, 0, 0]
+  image_width: 1280
+  image_height: 768
+
+diag:
+  # 帧率最低约 50 FPS，半帧约 10 ms；略放宽以匹配最近的可变帧率视频帧。
+  match_tolerance_ms: 12.0
+
+display:
+  enabled: true
+  keypoints: false
+  aimpoint: true
+  hitpoint: true
+  state_text: false
+  error_text: false
