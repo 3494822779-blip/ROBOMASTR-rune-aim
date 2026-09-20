@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace rmcs::debug {
 namespace {
@@ -35,6 +36,21 @@ auto project_to_image(const Point3d& world, const std::array<double, 9>& K,
     return to_cv(*pixel);
 }
 
+void draw_label(cv::Mat& img, const std::string& label, const cv::Point2f& origin,
+    const cv::Scalar& color) {
+    constexpr double font_scale = 0.55;
+    constexpr int thickness = 2;
+    int baseline = 0;
+    const auto label_size = cv::getTextSize(
+        label, cv::FONT_HERSHEY_SIMPLEX, font_scale, thickness, &baseline);
+    const auto label_x = std::clamp(static_cast<int>(origin.x), 0,
+        std::max(0, img.cols - label_size.width));
+    const auto label_y = std::clamp(static_cast<int>(origin.y), label_size.height,
+        std::max(label_size.height, img.rows - baseline));
+    cv::putText(img, label, cv::Point(label_x, label_y), cv::FONT_HERSHEY_SIMPLEX,
+        font_scale, color, thickness, cv::LINE_AA);
+}
+
 auto draw_marker(cv::Mat& img, const cv::Point2f& pixel, const cv::Scalar& color,
     const char* label) -> bool {
     if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y)
@@ -43,17 +59,8 @@ auto draw_marker(cv::Mat& img, const cv::Point2f& pixel, const cv::Scalar& color
         return false;
     cv::drawMarker(img, pixel, color, cv::MARKER_CROSS, 24, 2);
     cv::circle(img, pixel, 12, color, 2);
-    constexpr double font_scale = 0.55;
-    constexpr int thickness = 2;
-    int baseline = 0;
-    const auto label_size = cv::getTextSize(
-        label, cv::FONT_HERSHEY_SIMPLEX, font_scale, thickness, &baseline);
-    const auto label_x = std::clamp(static_cast<int>(pixel.x) + 16, 0,
-        std::max(0, img.cols - label_size.width));
-    const auto label_y = std::clamp(static_cast<int>(pixel.y) - 12, label_size.height,
-        std::max(label_size.height, img.rows - baseline));
-    cv::putText(img, label, cv::Point(label_x, label_y),
-        cv::FONT_HERSHEY_SIMPLEX, font_scale, color, thickness);
+    if (label && label[0] != '\0')
+        draw_label(img, label, pixel + cv::Point2f(16.0F, -12.0F), color);
     return true;
 }
 
@@ -88,10 +95,26 @@ void draw_aimpoint(cv::Mat& img, const RuneModel::State& state, double lead_time
 }
 
 auto draw_hitpoint(cv::Mat& img, const Point3d& hitpoint,
+    const std::optional<Point2d>& observed_center,
     const std::array<double, 9>& K, const std::array<double, 5>& distortion,
-    const Transform& camera_transform) -> bool {
+    const Transform& camera_transform) -> HitpointDrawResult {
+    auto result = HitpointDrawResult { };
     const auto pixel = project_to_image(hitpoint, K, distortion, camera_transform);
-    return pixel && draw_marker(img, *pixel, cv::Scalar(0, 0, 255), "HIT");
+    if (!pixel) return result;
+
+    result.hitpoint_drawn = draw_marker(img, *pixel, cv::Scalar(0, 0, 255), nullptr);
+    draw_label(img, "BULLET", *pixel + cv::Point2f(16.0F, 32.0F), cv::Scalar(0, 0, 255));
+    if (!observed_center) return result;
+
+    const auto observed = to_cv(*observed_center);
+    if (!std::isfinite(observed.x) || !std::isfinite(observed.y)
+        || observed.x < 0.0F || observed.x >= static_cast<float>(img.cols)
+        || observed.y < 0.0F || observed.y >= static_cast<float>(img.rows))
+        return result;
+
+    const auto error = cv::norm(*pixel - observed);
+    result.observation_error_px = error;
+    return result;
 }
 
 void draw_status(cv::Mat& img, const RuneFireControl::Command& cmd,

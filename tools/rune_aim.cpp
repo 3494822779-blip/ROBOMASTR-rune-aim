@@ -239,7 +239,8 @@ int main(int argc, char** argv) {
     Timestamp last_now{};
     double dt = 1.0 / cfg.input.hz;
     int frame_id = 0, init_count = 0, aim_count = 0;
-    int fire_count = 0, shot_count = 0, hit_count = 0;
+    int fire_count = 0, shot_count = 0, hit_count = 0, observed_hit_count = 0;
+    double hit_error_sum_px = 0.0, hit_error_max_px = 0.0;
     bool paused = false;
     bool tracking_corrected = false;
     bool last_fire = false;
@@ -248,8 +249,12 @@ int main(int argc, char** argv) {
     int fps_frames = 0;
     auto fps_stamp = std::chrono::steady_clock::now();
     RuneFireControl::Command last_cmd{};  // 主循环计算，可视化只读，避免重复推进火控状态机
-    std::multimap<Timestamp, Point3d> pending_hits;
-    std::vector<Point3d> frame_hits;
+    struct HitEvent {
+        Point3d point;
+        int feature_id = -1;
+    };
+    std::multimap<Timestamp, HitEvent> pending_hits;
+    std::vector<HitEvent> frame_hits;
     cv::Mat last_display;
     // Reuse per-frame containers to avoid allocator churn in the real-time loop.
     std::vector<RuneIcon> icons;
@@ -312,8 +317,21 @@ int main(int argc, char** argv) {
             if (cmd.fire) ++fire_count;
             if (cmd.shot_started) ++shot_count;
         }
+        const auto diag_samples_before = diag.stats().samples;
         diag.push_observation(now, state.rotation_angle);
+        const auto diag_after = diag.stats();
+        if (diag_after.samples != diag_samples_before) {
+            std::printf("[predict-error] frame %d signed=%.4f rad (%.2f deg)\n", frame_id,
+                diag_after.latest_error, util::rad2deg(diag_after.latest_error));
+        }
         if (cmd.found && cmd.shot_started) {
+            const auto prediction_mode = state.sine_valid ? "sine"
+                : state.use_prediction_speed ? "linear" : "ekf";
+            std::printf("[predict] frame %d target=%d mode=%s speed=%.4f ekf=%.4f rad/s cost=%.6f"
+                        " sine[v=%.4f a=%.4f w=%.4f]\n",
+                frame_id, cmd.target_feature_id, prediction_mode, state.rotation_speed,
+                state.filter_rotation_speed, state.prediction_cost, state.sine_v,
+                state.sine_a, state.sine_omega);
             const auto hit_dt = cfg.fire.algorithmic_delay + cfg.fire.shoot_delay + cmd.fly_time;
             auto clone = state;
             clone.transition(hit_dt);
@@ -324,7 +342,7 @@ int main(int argc, char** argv) {
                 pending_hits.emplace(
                     now + std::chrono::duration_cast<Timestamp::duration>(
                               std::chrono::duration<double>(hit_dt)),
-                    cmd.attack_point);
+                    HitEvent { cmd.attack_point, cmd.target_feature_id });
             }
         }
 
@@ -479,10 +497,26 @@ int main(int argc, char** argv) {
             }
             // 已发出的弹丸即使后续丢失跟踪，也应在其预计命中帧保留落点回放。
             if (opt.hitpoint) {
-                for (const auto& hitpoint : frame_hits) {
-                    if (debug::draw_hitpoint(display, hitpoint, cfg.camera.matrix,
-                            cfg.camera.distortion, model_pose))
+                for (const auto& hit : frame_hits) {
+                    std::optional<Point2d> observed_center;
+                    if (rune_inited && hit.feature_id >= 0) {
+                        for (const auto& tracked : model.addition().tracked) {
+                            if (tracked.feature_id == hit.feature_id) {
+                                observed_center = tracked.point;
+                                break;
+                            }
+                        }
+                    }
+                    const auto draw_result = debug::draw_hitpoint(display, hit.point,
+                        observed_center, cfg.camera.matrix, cfg.camera.distortion, model_pose);
+                    if (draw_result.hitpoint_drawn)
                         ++hit_count;
+                    if (draw_result.observation_error_px) {
+                        ++observed_hit_count;
+                        hit_error_sum_px += *draw_result.observation_error_px;
+                        hit_error_max_px = std::max(
+                            hit_error_max_px, *draw_result.observation_error_px);
+                    }
                 }
             }
             // 每约半秒更新一次，避免瞬时值抖动；文字始终显示在左上角。
@@ -538,6 +572,12 @@ int main(int argc, char** argv) {
     std::printf("  fire_frames : %d\n", fire_count);
     std::printf("  shot_events : %d\n", shot_count);
     std::printf("  hit_markers : %d\n", hit_count);
+    std::printf("  hit observed: %d", observed_hit_count);
+    if (observed_hit_count > 0) {
+        std::printf(" (mean=%.2f px, max=%.2f px)",
+            hit_error_sum_px / static_cast<double>(observed_hit_count), hit_error_max_px);
+    }
+    std::printf("\n");
     if (!cli.output.empty())
         std::printf("  output_video: %s (%d frames @ %.3f FPS)\n",
             cli.output.c_str(), output_frames, output_fps);

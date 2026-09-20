@@ -33,9 +33,9 @@ public:
     auto fit_linear() const -> std::optional<LinearResult>;
     auto fit_sine() const -> std::optional<FitResult>;
 
-    static constexpr double kWindowSeconds         = 6.0;
+    static constexpr double kWindowSeconds         = 4.0;
     static constexpr double kMinFitSeconds         = 1.5;
-    static constexpr double kWeightHalfLifeSeconds = 3.0;
+    static constexpr double kWeightHalfLifeSeconds = 1.5;
 
     ~RuneEnergyFitter();
 

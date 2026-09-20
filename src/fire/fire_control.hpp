@@ -66,6 +66,7 @@ public:
         double fly_time = 0.0;    // s
         Point3d attack_point = Point3d::kZero(); // 固定点迭代最终使用的目标点
         bool has_attack_point = false;
+        int target_feature_id = -1; // 0=R 标，1..5=符叶；用于命中帧关联同一识别目标
         // P2-8：云台角速度/角加速度前馈（命中时刻符叶的射线运动，实车动态跟踪用）
         Vector3d ff_v = Vector3d::kZero();
         Vector3d ff_a = Vector3d::kZero();

@@ -54,7 +54,7 @@ struct RuneFireControl::Impl {
 
     // 瞄准点外推 + 弹道固定点迭代。返回 false 表示弹道无解。
     auto aim_and_ballistic(const RuneModel::State& state, double& yaw, double& pitch,
-        double& fly_time, Point3d& attack_point, bool& has_blade,
+        double& fly_time, Point3d& attack_point, bool& has_blade, int& target_feature_id,
         Vector3d& ff_v, Vector3d& ff_a) -> bool {
 
         if (!std::isfinite(config.bullet_speed) || config.bullet_speed <= 0.0 ||
@@ -69,6 +69,7 @@ struct RuneFireControl::Impl {
         auto t_f = std::min(distance / config.bullet_speed, config.max_fly_time);
 
         auto solution = TrajectorySolution { };
+        bool converged = false;
         for (int i = 0; i < config.max_iterate; ++i) {
             const auto dt_hit = config.algorithmic_delay + config.shoot_delay + t_f;
 
@@ -81,11 +82,13 @@ struct RuneFireControl::Impl {
                 // 收敛期/视野内无未激活符叶：瞄准符心，禁射
                 attack    = clone.get_direction();
                 has_blade = false;
+                target_feature_id = -1;
                 ff_v      = Vector3d::kZero();
                 ff_a      = Vector3d::kZero();
             } else {
                 attack    = aimpoints.front();
                 has_blade = true;
+                target_feature_id = aimpoints.front().feature_id;
                 // P2-8：透出前馈（AimPoint 携带命中时刻符叶的射线角速度/角加速度）
                 ff_v      = aimpoints.front().ff_v;
                 ff_a      = aimpoints.front().ff_a;
@@ -103,8 +106,14 @@ struct RuneFireControl::Impl {
             yaw             = result->yaw;
             pitch           = result->pitch;
 
-            if (std::abs(t_f - prev) < config.iterate_epsilon) break;
+            if (std::abs(t_f - prev) < config.iterate_epsilon) {
+                converged = true;
+                break;
+            }
         }
+
+        // A non-converged pair uses different target and arrival times and must not fire.
+        if (!converged) return false;
 
         fly_time = t_f;
         yaw      = util::normalize_angle(yaw + config.offset_yaw);
@@ -188,9 +197,11 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     double yaw = 0.0, pitch = 0.0, fly_time = 0.0;
     Point3d attack_point = Point3d::kZero();
     bool has_blade = false;
+    int target_feature_id = -1;
     Vector3d ff_v = Vector3d::kZero(), ff_a = Vector3d::kZero();
     const bool ballistic_ok =
-        im.aim_and_ballistic(state, yaw, pitch, fly_time, attack_point, has_blade, ff_v, ff_a);
+        im.aim_and_ballistic(state, yaw, pitch, fly_time, attack_point, has_blade,
+            target_feature_id, ff_v, ff_a);
     im.last_yaw   = yaw;
     im.last_pitch = pitch;
 
@@ -206,6 +217,7 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     cmd.ff_a          = ff_a;
     cmd.attack_point  = attack_point;
     cmd.has_attack_point = ballistic_ok && has_blade;
+    cmd.target_feature_id = cmd.has_attack_point ? target_feature_id : -1;
 
     // ---- 数据过期：平滑回符心 ----
     if (!ballistic_ok) {

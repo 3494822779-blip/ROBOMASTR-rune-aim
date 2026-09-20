@@ -16,18 +16,11 @@ namespace {
         return std::exp2((t - reference_t) / RuneEnergyFitter::kWeightHalfLifeSeconds);
     }
 
-    // ---- P0 升级：ω 两阶段精化 + Cauchy IRLS 鲁棒加权 ----
-    // 1) 粗扫 41 步后，在最优 ω 邻域做黄金分割搜索，分辨率从 0.01 提升到 ~1e-4 rad/s；
-    // 2) 每个 ω 的线性参数用 IRLS 迭代求解：总权重 = 时间权重 × Cauchy 残差权重，
-    //    切叶/遮挡产生的离群相位自动降权（参考 RP-26Rune LM-IRLS 的鲁棒核设计）。
-    constexpr int    kSweepSteps   = 41;                  // 粗扫步数（保持）
-    constexpr double kOmegaMin     = 1.80;
-    constexpr double kOmegaMax     = 2.20;
+    // 大符规则频率固定为 1.884 rad/s。继续从短视频自由估计频率会造成明显的
+    // 外推漂移；基速、振幅和相位仍由观测使用 Cauchy IRLS 鲁棒拟合。
+    constexpr double kRuneAngularFrequency = 1.884;
     constexpr int    kIrisIters    = 3;                   // IRLS 迭代次数
     constexpr double kCauchyScale  = 2.5;                 // Cauchy 尺度因子（RP 同款）
-    constexpr double kOmegaTol     = 1e-4;                // 精化收敛（rad/s）
-    constexpr int    kRefineIters  = 40;                  // 黄金分割最大迭代
-    constexpr double kGoldenRatio  = 0.6180339887498949;
 
 } // namespace
 
@@ -176,53 +169,9 @@ auto RuneEnergyFitter::fit_sine() const -> std::optional<FitResult> {
         return { coeff, mse };
     };
 
-    // ---- 阶段 1：粗扫（保持 41 步） ----
-    double best_mse   = std::numeric_limits<double>::max();
-    double best_omega = kOmegaMin;
-    Eigen::Vector4d best_coeff = Eigen::Vector4d::Zero();
-    for (int s = 0; s <= kSweepSteps; ++s) {
-        const auto omega = kOmegaMin + s * (kOmegaMax - kOmegaMin) / kSweepSteps;
-        const auto [coeff, mse] = eval_omega(omega);
-        if (mse < best_mse) {
-            best_mse   = mse;
-            best_omega = omega;
-            best_coeff = coeff;
-        }
-    }
-
-    // ---- 阶段 2：最优邻域黄金分割精化（分辨率 0.01 → ~1e-4 rad/s） ----
-    const auto step = (kOmegaMax - kOmegaMin) / kSweepSteps;
-    auto lo = std::max(kOmegaMin, best_omega - step);
-    auto hi = std::min(kOmegaMax, best_omega + step);
-    if (hi - lo > 1e-6) {
-        auto a = lo, b = hi;
-        auto c = b - kGoldenRatio * (b - a);
-        auto d = a + kGoldenRatio * (b - a);
-        auto fc = eval_omega(c).second;
-        auto fd = eval_omega(d).second;
-        for (int i = 0; i < kRefineIters && (b - a) > kOmegaTol; ++i) {
-            if (fc < fd) {
-                b  = d;
-                d  = c;
-                fd = fc;
-                c  = b - kGoldenRatio * (b - a);
-                fc = eval_omega(c).second;
-            } else {
-                a  = c;
-                c  = d;
-                fc = fd;
-                d  = a + kGoldenRatio * (b - a);
-                fd = eval_omega(d).second;
-            }
-        }
-        const auto refined = 0.5 * (a + b);
-        const auto [coeff, mse] = eval_omega(refined);
-        if (mse < best_mse) {
-            best_mse   = mse;
-            best_omega = refined;
-            best_coeff = coeff;
-        }
-    }
+    const auto [best_coeff, best_mse] = eval_omega(kRuneAngularFrequency);
+    if (!best_coeff.allFinite() || !std::isfinite(best_mse)) return std::nullopt;
+    constexpr auto best_omega = kRuneAngularFrequency;
 
     const double C = best_coeff(0) - best_coeff(1) * reference_t;
     const double v = best_coeff(1);

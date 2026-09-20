@@ -24,6 +24,8 @@ public:
         Timestamp current_timestamp;  // 当前模型时刻（视频模式为合成时间戳）
 
         double rotation_speed;
+        double filter_rotation_speed = 0.0; // EKF 最近观测速度，用于检查拟合起点偏差
+        double sine_speed_correction = 0.0; // 正弦拟合速度与最近 EKF 速度的起点差
         double rotation_angle;
 
         double face_yaw = 0;

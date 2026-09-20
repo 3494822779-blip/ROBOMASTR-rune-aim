@@ -11,6 +11,7 @@
 #include <opencv2/core.hpp>
 
 #include <array>
+#include <optional>
 #include <vector>
 
 namespace rmcs::debug {
@@ -32,10 +33,16 @@ void draw_aimpoint(cv::Mat& img, const RuneModel::State& state, double lead_time
     const std::array<double, 9>& K, const std::array<double, 5>& distortion,
     const Transform& camera_transform);
 
-// 命中回放层：把开火时锁定的落点绘制在预计命中时刻对应的视频帧上。
+struct HitpointDrawResult {
+    bool hitpoint_drawn = false;
+    std::optional<double> observation_error_px;
+};
+
+// 命中回放层：只绘制红色理论弹丸终点；同叶片观测仅用于后台误差统计。
 auto draw_hitpoint(cv::Mat& img, const Point3d& hitpoint,
+    const std::optional<Point2d>& observed_center,
     const std::array<double, 9>& K, const std::array<double, 5>& distortion,
-    const Transform& camera_transform) -> bool;
+    const Transform& camera_transform) -> HitpointDrawResult;
 
 // 状态层：火控状态机文字（开火红色）+ 诊断误差
 void draw_status(cv::Mat& img, const RuneFireControl::Command& cmd,

@@ -36,12 +36,13 @@ auto RuneModel::State::transition(double seconds) -> void {
 
         if (std::abs(sine_omega) > 1e-12) {
             rotation_angle += sine_v * seconds
-                + sine_a / sine_omega * (std::cos(old_phase) - std::cos(sine_phase));
+                + sine_a / sine_omega * (std::cos(old_phase) - std::cos(sine_phase))
+                + sine_speed_correction * seconds;
         } else {
             rotation_angle += rotation_speed * seconds;
         }
 
-        rotation_speed = sine_v + sine_a * std::sin(sine_phase);
+        rotation_speed = sine_v + sine_a * std::sin(sine_phase) + sine_speed_correction;
     } else {
         rotation_angle = rotation_angle + rotation_speed * seconds;
     }
@@ -60,11 +61,12 @@ auto RuneModel::State::get_aimpoints() const -> AimPoints {
     static constexpr std::array kBladeAnglesDeg = { 0.0, 72.0, 144.0, 216.0, 288.0 };
 
     auto result = AimPoints { };
-    for (const auto& [deg, inactive] : std::views::zip(kBladeAnglesDeg, inactive)) {
-        if (!inactive) continue;
+    for (std::size_t blade = 0; blade < kBladeAnglesDeg.size(); ++blade) {
+        if (!inactive[blade]) continue;
 
         auto aimpoint = AimPoint { };
         {
+            const auto deg = kBladeAnglesDeg[blade];
             const auto alpha = rotation_angle + util::deg2rad(deg);
             const auto sin_a = std::sin(alpha);
             const auto cos_a = std::cos(alpha);
@@ -94,6 +96,7 @@ auto RuneModel::State::get_aimpoints() const -> AimPoints {
             const auto world_a = (r_face * local_a).eval();
 
             aimpoint = AimPoint { world };
+            aimpoint.feature_id = static_cast<int>(blade) + 1;
 
             // 方向向量 d = world/|world| 的角速度 ω 与角加速度 α（射线假设）
             if (const auto distance = world.norm(); distance > 1e-6) {
@@ -130,7 +133,7 @@ struct RuneModel::Impl {
     static constexpr auto kPsi = 5;
 
     static constexpr auto kInactiveTimeout  = std::chrono::milliseconds { 100 };
-    static constexpr auto kFitWarmupSeconds = 1.0;
+    static constexpr auto kFitWarmupSeconds = 0.2;
 
     struct Context {
         StateVector posteriors_state     = StateVector::Zero();
@@ -175,6 +178,12 @@ struct RuneModel::Impl {
                 .rotation_speed       = sine_valid
                     ? sine_v + sine_a * std::sin(sine_phase)
                     : (use_prediction_speed ? prediction_speed : posteriors_state[kW]),
+                .filter_rotation_speed = posteriors_state[kW],
+                .sine_speed_correction = sine_valid
+                    ? std::clamp(posteriors_state[kW]
+                            - (sine_v + sine_a * std::sin(sine_phase)),
+                        -0.5, 0.5)
+                    : 0.0,
                 .rotation_angle       = posteriors_state[kA],
                 .face_yaw             = posteriors_state[kPsi],
                 .inactive             = inactive,
@@ -928,15 +937,15 @@ struct RuneModel::Impl {
         if (big_active_corrected > 0 && small_active_corrected == 0) {
             big_activation_evidence = std::min(
                 kActivationEvidenceFrames, big_activation_evidence + 1);
-            small_activation_evidence = 0;
+            small_activation_evidence = std::max(0, small_activation_evidence - 1);
         } else if (small_active_corrected > 0 && big_active_corrected == 0) {
             small_activation_evidence = std::min(
                 kActivationEvidenceFrames, small_activation_evidence + 1);
-            big_activation_evidence = 0;
+            big_activation_evidence = std::max(0, big_activation_evidence - 1);
         } else {
-            // Missing or contradictory category observations break continuity.
-            small_activation_evidence = 0;
-            big_activation_evidence = 0;
+            // A single missed/contradictory classification must not flip prediction mode.
+            small_activation_evidence = std::max(0, small_activation_evidence - 1);
+            big_activation_evidence = std::max(0, big_activation_evidence - 1);
         }
         if (inactive_corrected > 1 || big_activation_evidence >= kActivationEvidenceFrames) {
             force_sine_until = current_stamp + std::chrono::seconds { 3 };

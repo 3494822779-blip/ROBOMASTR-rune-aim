@@ -31,7 +31,7 @@ rune_aim/
 │   ├── fire/        RuneFireControl（预瞄+开火状态机）+ Trajectory（弹道）
 │   ├── diag/        RuneDiagnostics（预测误差）+ DelayCalibrator（链路延迟标定）
 │   └── debug/       统一可视化绘制层
-├── tools/           命令行工具：rune_aim / rune_bench / camera_calib / delay_calib
+├── tools/           命令行工具：rune_aim / rune_bench / camera_calib / ballistic_test / delay_calib
 ├── data/            测试视频（rune_test_h264.mp4）
 ├── model/           ONNX 与 TensorRT FP16 engine
 ├── docs/            文档（PIPELINE.md 为全链路详解，推荐先读）
@@ -63,6 +63,27 @@ template.yaml 一处即可全局生效；启动日志打印 base/scene 两层与
 | `rune_bench` | 检测器性能基准 | `./build/rune_bench <engine> <video> [max_frames] [score_thr] [keypoint_thr]` |
 | `delay_calib` | 链路延迟互相关标定 | `./build/delay_calib 120 2 30` |
 | `camera_calib` | 棋盘格相机内参标定 | `./build/camera_calib --cols 9 --rows 6 --square-mm 25` |
+| `ballistic_test` | 外参完成后的实弹落点预测与偏置闭环 | `./build/ballistic_test -c config/camera_sentry.yaml --distance 7` |
+
+### 实弹弹道闭环测试
+
+外参、内参完成后，先在安全靶场固定距离并启动：
+
+```bash
+cmake --build build --target ballistic_test -j$(nproc)
+./build/ballistic_test -c config/camera_sentry.yaml --distance 7
+```
+
+右键选择靶点，黄色 `AIM` 是当前弹道与偏置对应的云台瞄准位置，绿色是预计命中点。
+云台到达 `AIM` 后射击，按空格冻结画面，再左键点击新弹孔；程序按去畸变后的角误差和
+`--gain`（默认 0.7）更新 `fire.offset_yaw/pitch`。重复射击、点击，直到落点收敛。`u` 撤销
+误点，`s` 保存，`[`/`]` 调距离，`-`/`+` 调弹速，`r` 把靶点恢复到主点。该工具不连接
+云台或扳机，瞄准、射击和靶场安全流程由实车控制端负责。
+
+结果默认写到 `/tmp/ballistic_calibration.yaml`，每轮原始误差写到
+`/tmp/ballistic_calibration.csv`；输入配置不会被覆盖。结果 YAML 可直接作为场景覆盖配置，
+也可把其中三个 `fire` 参数合并回真机配置。单一距离下弹速与俯仰零偏不可辨识，因此程序
+只自动修正角偏置；`bullet_speed` 应优先用测速仪测量，再用多个距离验证。
 
 ### 相机内参标定
 

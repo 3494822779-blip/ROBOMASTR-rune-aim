@@ -9,6 +9,9 @@ namespace rmcs {
 
 struct AimPoint : Point3d {
     bool valid = true;
+    // Tracker feature identity. Rune blades use 1..5 (0 is the center icon);
+    // generic aim points keep -1 when no stable identity is available.
+    int feature_id = -1;
 
     Vector3d ff_v = Vector3d::kZero();
     Vector3d ff_a = Vector3d::kZero();

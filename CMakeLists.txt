@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(rune_aim LANGUAGES CXX CUDA)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type (Debug, Release, RelWithDebInfo)")
@@ -81,6 +83,16 @@ target_link_libraries(delay_calib PRIVATE rune_core)
 # ---- 相机棋盘格内参标定 ----
 add_executable(camera_calib tools/camera_calib.cpp)
 target_link_libraries(camera_calib PRIVATE ${OpenCV_LIBS})
+
+# ---- 外参标定后的实弹落点 / 弹道偏置迭代测试 ----
+add_executable(ballistic_test tools/ballistic_test.cpp)
+target_link_libraries(ballistic_test PRIVATE rune_core)
+
+if(BUILD_TESTING)
+  add_executable(rune_prediction_test tests/prediction_test.cpp)
+  target_link_libraries(rune_prediction_test PRIVATE rune_core)
+  add_test(NAME rune_prediction_test COMMAND rune_prediction_test)
+endif()
 
 if(ENABLE_ROS2)
   find_package(ament_cmake REQUIRED)
