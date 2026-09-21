@@ -1,0 +1,18 @@
+# Bevy TCP camera + virtual gimbal. Intrinsics and pose come from each frame.
+input:
+  mode: simulator
+  source: 192.168.31.157:7447
+  max_frames: 0
+  video_fps: 30
+fire:
+  bullet_speed: 25.0
+  shoot_delay: 0.0
+  algorithmic_delay: 0.08
+  pitch_max: 1.2
+  data_life: 0.2
+display:
+  enabled: false
+  keypoints: true
+  aimpoint: true
+  state_text: true
+  error_text: true

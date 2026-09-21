@@ -46,6 +46,7 @@ add_library(rune_core STATIC
   src/debug/draw.cpp
   # ---- 核心 ----
   src/core/camera.cpp
+  src/core/simulator.cpp
   src/core/frame_source.cpp
   src/core/reprojection.cpp
   src/core/rune_pnp.cpp
@@ -89,6 +90,10 @@ add_executable(ballistic_test tools/ballistic_test.cpp)
 target_link_libraries(ballistic_test PRIVATE rune_core)
 
 if(BUILD_TESTING)
+  add_executable(rune_simulator_test tests/simulator_test.cpp)
+  target_link_libraries(rune_simulator_test PRIVATE rune_core)
+  add_test(NAME rune_simulator_test COMMAND rune_simulator_test)
+  set_tests_properties(rune_simulator_test PROPERTIES TIMEOUT 15)
   add_executable(rune_prediction_test tests/prediction_test.cpp)
   target_link_libraries(rune_prediction_test PRIVATE rune_core)
   add_test(NAME rune_prediction_test COMMAND rune_prediction_test)

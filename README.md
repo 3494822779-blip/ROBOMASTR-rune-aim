@@ -334,3 +334,81 @@ tools/start_foxglove.sh -c config/camera_sentry.yaml # 已配置好的相机
 以及 `ros-humble-foxglove-bridge`（本机已安装）。
 
 链路验证：启动虚拟符后执行 `python3 tools/check_ros.py`（先 source ROS 环境；需要 python3-websocket、OpenCV、NumPy）。
+
+## Bevy 仿真联调（电脑渲染，Jetson 运行当前自瞄）
+
+新增 `simulator` 输入，直接使用 TCP 接收 Bevy JPEG、内参、相机姿态与枪口位置，
+沿用本工程 TensorRT 检测 → EKF → 转速拟合 → 弹道/火控，并向虚拟云台回传指令。
+不需要 ROS；可另用 ROS 构建的 `--ros` 发布 Foxglove 遥测。
+
+电脑 `rog@192.168.31.157`：
+
+```bash
+cd ~/桌面/bevy_robomaster_simulator
+./run-rune-aim-sim.sh
+```
+
+Jetson：
+
+```bash
+cmake --build build --target rune_aim -j4
+./tools/run_simulator.sh                      # 只瞄准
+./tools/run_simulator.sh --sim-fire           # 瞄准并发射虚拟弹丸
+./tools/run_simulator.sh --sim-fire --max-frames 450 --output /tmp/rune-sim.mp4
+```
+
+仿真窗口的 F5 控制自瞄开关；测试时应保持开启。结束算法使用 Ctrl+C。
+同一时刻只运行一个 TCP 客户端。地址在 `config/rune_simulator.yaml` 修改。
+两端令牌分别保存在 `~/.config/rune_aim/simulator.env`（Jetson）和
+`~/.config/rune-simulator.env`（电脑），不写入仓库；也可通过
+`DAEDALUS_BRIDGE_TOKEN` 环境变量提供。默认关闭本地显示，录制仍会绘制检测与瞄准信息。
+
+接入依赖电脑 `src/network.rs` 新增的 `muzzle_position`、`chassis_yaw_deg`、
+`bore_pitch_deg` 元数据，旧服务端需更新并重新编译。相机 FLU 外参按光学四元数转换，
+以首帧枪口为世界坐标原点；当前枪口平移用于火控修正。指令将世界 yaw 换算为底盘本地 yaw，
+并补偿模型枪管固定仰角和算法 pitch 的正负方向。
+
+每帧顺序执行接收、检测、解算、回复，不预取下一帧；TCP 回包的源序号始终是本次检测的
+图像序号，服务端保留 300ms 过期保护。采集时间差来自电脑时钟，并以首帧 Jetson 收帧
+时刻映射到本地 steady clock，无需两机绝对时间同步。网络中断/超时退出程序，重新运行
+脚本即可连接；目前不自动重连。实测场景为静止底盘打大符，未验证运动底盘精度。
+`algorithmic_delay: 0.08` 是初始联调值，仍需按实际延迟调优；本地弹道空气阻力与仿真
+默认无阻力也存在小幅差异。
+
+2026-09-21 首轮虚拟射击验收：450 帧，197 帧有效解算；电脑反馈 12 发、5 次命中计数，
+详细日志出现 `PrimaryHit` 和 `Activated`，证明检测到虚拟命中的闭环已跑通。
+该结果不是稳定命中率评测；机关熄灭/重置阶段会出现无检测和重新初始化。
+协议测试覆盖分片 TCP、帧序号绑定、光学/FLU 转换、枪管仰角补偿和非法包长拒绝：
+
+```bash
+cmake --build build --target rune_simulator_test rune_prediction_test -j4
+ctest --test-dir build --output-on-failure
+```
+
+### 本机实时调试窗口
+
+在 Jetson 本机桌面终端运行（地图调整期间先不要启动）：
+
+```bash
+./tools/debug_simulator.sh
+# 可选：启动时允许虚拟开火，并保存标注视频
+./tools/debug_simulator.sh --sim-fire --output /tmp/rune-debug.mp4
+```
+
+窗口显示仿真相机画面、检测关键点、预测瞄准点、处理 FPS、收帧加解算耗时、
+实际云台角度、跟踪状态，以及服务端的自瞄/开火许可和射击命中计数。
+`frame ms` 包含网络收帧等待与检测解算，不代表两机端到端时延。
+窗口可缩放；默认只瞄准，虚拟开火关闭。不能与后台自瞄同时连接同一个仿真服务。
+
+| 按键 | 功能 |
+|---|---|
+| 空格 | 暂停/恢复控制输出；图像接收和检测继续，便于观察 |
+| F | 开关虚拟开火；仍需电脑端允许仿真开火 |
+| R | 重置跟踪和火控，重新初始化 |
+| V | 开关检测、瞄准点和弹道标记叠加 |
+| D / A | 分别开关检测关键点 / 预测瞄准点 |
+| S | 将当前画面保存为项目目录下的 `shot_帧号.png` |
+| Q / Esc / 关闭窗口 | 退出调试 |
+
+这里的空格和 F 是本机调试窗口快捷键；电脑仿真窗口的 F5 仍独立控制服务端自瞄。
+地图修改期间不会自动启动或连接仿真，以上命令由使用者手动执行。
