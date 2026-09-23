@@ -31,10 +31,10 @@ rune_aim/
 │   ├── fire/        RuneFireControl（预瞄+开火状态机）+ Trajectory（弹道）
 │   ├── diag/        RuneDiagnostics（预测误差）+ DelayCalibrator（链路延迟标定）
 │   └── debug/       统一可视化绘制层
-├── tools/           命令行工具：rune_aim / rune_bench / camera_calib / ballistic_test / delay_calib
+├── tools/           命令行工具：rune_aim / rune_bench / camera_calib / gimbal_extrinsic_calib /
+│                    ballistic_test / delay_calib
 ├── data/            测试视频（rune_test_h264.mp4）
 ├── model/           ONNX 与 TensorRT FP16 engine
-├── docs/            文档（PIPELINE.md 为全链路详解，推荐先读）
 └── build.sh / CMakeLists.txt
 ```
 
@@ -63,6 +63,7 @@ template.yaml 一处即可全局生效；启动日志打印 base/scene 两层与
 | `rune_bench` | 检测器性能基准 | `./build/rune_bench <engine> <video> [max_frames] [score_thr] [keypoint_thr]` |
 | `delay_calib` | 链路延迟互相关标定 | `./build/delay_calib 120 2 30` |
 | `camera_calib` | 棋盘格相机内参标定 | `./build/camera_calib --cols 9 --rows 6 --square-mm 25` |
+| `gimbal_extrinsic_calib` | 陀螺仪-相机外参标定（AX=XB 手眼标定，求解算法已验证，相机+PnP 采集流程待实现） | `./build/gimbal_extrinsic_calib --self-test` |
 | `ballistic_test` | 外参完成后的实弹落点预测与偏置闭环 | `./build/ballistic_test -c config/camera_sentry.yaml --distance 7` |
 
 ### 实弹弹道闭环测试
@@ -273,9 +274,14 @@ camera:
 
 ## 实车集成要点
 
-- 火控输出 Odom 系射线角 yaw/pitch 与开火标志；坐标系约定与 rmcs_auto_aim_v2 一致；
-- 接入实车：`RuneFireControl::Command` → 云台目标角 + 开火指令；回读 IMU 更新相机外参
-  （`RuneModel::update_transform`，config 的 `camera.transform`）；
+- 外参、机械偏置和弹道参数是一次性标定后写入 YAML 的静态参数；它们只能提高目标射线
+  和弹道解算的准确度，不能替代云台的实时跟踪闭环，也不会直接驱动电机。
+- 火控每帧输出 `RuneFireControl::Command`：Odom 系射线角 `yaw/pitch`、开火标志
+  `fire`，以及目标射线的 `ff_v/ff_a` 前馈；云台控制端必须持续消费这组指令，而不是
+  只在标定完成后读取一次。坐标系约定与 rmcs_auto_aim_v2 一致；
+- 接入实车：`RuneFireControl::Command` → 云台目标角 + 开火指令；云台控制端负责自己的
+  电机位置/速度闭环。回读 IMU 更新相机外参（`RuneModel::update_transform`，config 的
+  `camera.transform`）；
 - 必改参数：`camera.*`（标定）、`fire.bullet_speed` / `fire.shoot_delay`（发射仓标定）、
   `fire.algorithmic_delay`（可用 `delay_calib` 标定）。
 - 接工业相机（海康 MVS / 大恒 Galaxy 等 `cv::VideoCapture` 打不开的设备）：实现

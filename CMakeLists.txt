@@ -51,6 +51,7 @@ add_library(rune_core STATIC
   src/core/reprojection.cpp
   src/core/rune_pnp.cpp
   src/core/config_loader.cpp
+  src/core/gimbal_extrinsic.cpp
 )
 target_include_directories(rune_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(rune_core PUBLIC ${OpenCV_LIBS} Eigen3::Eigen CUDA::cudart nvinfer yaml-cpp::yaml-cpp Threads::Threads)
@@ -88,6 +89,10 @@ target_link_libraries(camera_calib PRIVATE ${OpenCV_LIBS})
 # ---- 外参标定后的实弹落点 / 弹道偏置迭代测试 ----
 add_executable(ballistic_test tools/ballistic_test.cpp)
 target_link_libraries(ballistic_test PRIVATE rune_core)
+
+# ---- 陀螺仪-相机外参标定 (AX=XB hand-eye calibration) ----
+add_executable(gimbal_extrinsic_calib tools/gimbal_extrinsic_calib.cpp)
+target_link_libraries(gimbal_extrinsic_calib PRIVATE rune_core)
 
 if(BUILD_TESTING)
   add_executable(rune_simulator_test tests/simulator_test.cpp)
