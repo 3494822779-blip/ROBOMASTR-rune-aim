@@ -31,6 +31,11 @@ public:
         double face_yaw = 0;
 
         std::array<bool, 5> inactive;
+        // 最近一次确认未激活的符叶（0..4），-1 表示无记忆。
+        // inactive[] 的有效期（kInactiveTimeout）短于火控 data_life，两者之间的夹缝会让
+        // get_aimpoints() 空返、瞄准点回退到符心；该记忆用 EKF 相位把这段夹缝补上。
+        int  last_inactive_blade = -1;
+        bool last_inactive_valid = false; // 记忆是否仍在 kInactiveMemory 有效期内
         bool converged = false;
 
         bool use_prediction_speed = false;

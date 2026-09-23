@@ -27,6 +27,9 @@ struct RuneFireControl::Impl {
     // 数据新鲜度
     std::size_t last_update_count = 0;
     double      data_age          = 0.0;
+    // 无未激活符叶的累计时长。激活态误判时 update_count 仍在涨、data_age 会被清零，
+    // 仅靠 data_age 无法把状态机从 READY 踢出，需要独立计时。
+    double      blade_age         = 0.0;
 
     // 切叶检测
     double last_rotation_angle = 0.0;
@@ -169,10 +172,12 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     if (fresh) {
         im.last_update_count = state.update_count;
         im.data_age          = 0.0;
-        im.recovering        = false;
     } else {
         im.data_age += dt;
     }
+    // 注意：recovering 的取消不能只看数据新鲜度。激活态误判时每帧都"新鲜"，
+    // 若在此清零会导致恢复插值每帧重启、k 永远到不了 1。取消条件下移到
+    // 目标真正可用（弹道有解 + 有未激活符叶 + 数据未过期）之处。
 
     // ---- 切叶检测（连续跳变确认） ----
     if (fresh) {
@@ -205,6 +210,13 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     im.last_yaw   = yaw;
     im.last_pitch = pitch;
 
+    // 无可攻击符叶的累计时长（弹道无解时不计入，由下面的 LOST 分支统一处理）
+    if (ballistic_ok && has_blade) {
+        im.blade_age = 0.0;
+    } else if (ballistic_ok) {
+        im.blade_age += dt;
+    }
+
     auto cmd          = Command { };
     // A detector miss does not immediately invalidate the EKF prediction.
     // Keep the target usable within data_life; prolonged misses are handled
@@ -223,12 +235,15 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
     if (!ballistic_ok) {
         im.state       = State::LOST;
         im.firing_time = 0.0;
+        im.blade_age   = 0.0;
         cmd.state      = State::LOST;
         cmd.reason     = "ballistic failed";
         return cmd;
     }
 
-    if (im.data_age > config_.data_life) {
+    const bool data_expired  = im.data_age > config_.data_life;
+    const bool blade_expired = im.blade_age > config_.blade_life;
+    if (data_expired || blade_expired) {
         cmd.found = false;
         if (!im.recovering) {
             im.begin_recover(state);
@@ -241,13 +256,21 @@ auto RuneFireControl::update(const RuneModel::State& state, Timestamp now) -> Co
         cmd.yaw   = im.recover_start_yaw + (center_yaw - im.recover_start_yaw) * k;
         cmd.pitch = im.recover_start_pitch + (center_pitch - im.recover_start_pitch) * k;
         cmd.state = State::RECOVERING;
-        cmd.reason = "data expired, recovering to rune center";
+        cmd.reason = data_expired ? "data expired, recovering to rune center"
+                                  : "no inactive blade, recovering to rune center";
         if (k >= 1.0) {
-            im.state      = State::LOST;
-            im.recovering = false;
+            im.state = State::LOST;
+            // recovering 保持为 true：插值已收敛到符心，继续停在符心即可。
+            // 此处若清零，持续的失效会让下一帧重新 begin_recover 并再次起跳。
         }
         return cmd;
     }
+
+    // 走到这里目标真正可用（弹道有解 + 数据未过期 + 符叶未超时）。
+    // 即使恢复尚未完成也必须经过 RECOVERING 分支，重新进入冷却，避免
+    // 短暂丢失符叶后直接沿用 READY 状态开火。
+    if (im.recovering) im.state = State::RECOVERING;
+    im.recovering = false;
 
     // ---- 开火状态机 ----
     switch (im.state) {

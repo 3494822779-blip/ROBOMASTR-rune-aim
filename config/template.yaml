@@ -58,6 +58,7 @@ fire:                     # —— 火控（RuneFireControl）——
   fire_cooldown: 0.7      # 连发窗口后冷却 s
   fire_window: 0.04       # 连续开火窗口 s
   data_life: 0.2          # 数据寿命 s，超时禁射
+  blade_life: 0.3         # 无未激活符叶的容忍时长 s，超时视为目标失效
   recover_time: 0.2       # 数据过期回符心平滑时长 s
   switch_angle: 0.30      # 切叶检测相位跳变阈值 rad ≈ 17°
   switch_confirm: 5       # 连续跳变帧数确认切叶

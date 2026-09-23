@@ -60,10 +60,9 @@ auto RuneModel::State::get_aimpoints() const -> AimPoints {
 
     static constexpr std::array kBladeAnglesDeg = { 0.0, 72.0, 144.0, 216.0, 288.0 };
 
-    auto result = AimPoints { };
-    for (std::size_t blade = 0; blade < kBladeAnglesDeg.size(); ++blade) {
-        if (!inactive[blade]) continue;
-
+    // 由符叶索引推出瞄准点。只依赖 rotation_angle / rotation_speed / face_yaw，
+    // 不依赖当帧检测量，因此记忆分支可直接按 EKF 相位外推。
+    const auto make_aimpoint = [&](std::size_t blade) -> AimPoint {
         auto aimpoint = AimPoint { };
         {
             const auto deg = kBladeAnglesDeg[blade];
@@ -109,10 +108,29 @@ auto RuneModel::State::get_aimpoints() const -> AimPoints {
             }
         }
 
-        result.emplace_back(aimpoint);
-        break;
+        return aimpoint;
+    };
+
+    const auto single = [&](std::size_t blade) {
+        auto result = AimPoints { };
+        result.emplace_back(make_aimpoint(blade));
+        return result;
+    };
+
+    // 优先用当帧确认的未激活符叶。
+    for (std::size_t blade = 0; blade < kBladeAnglesDeg.size(); ++blade) {
+        if (!inactive[blade]) continue;
+        return single(blade);
     }
-    return result;
+
+    // 当帧无未激活符叶：若记忆仍有效，按 EKF 相位外推上一次确认的符叶，
+    // 避免检测短暂漏帧时瞄准点回退到符心。
+    if (last_inactive_valid && last_inactive_blade >= 0
+        && static_cast<std::size_t>(last_inactive_blade) < kBladeAnglesDeg.size()) {
+        return single(static_cast<std::size_t>(last_inactive_blade));
+    }
+
+    return { };
 }
 
 // ===== Impl =====
@@ -133,6 +151,9 @@ struct RuneModel::Impl {
     static constexpr auto kPsi = 5;
 
     static constexpr auto kInactiveTimeout  = std::chrono::milliseconds { 100 };
+    // 未激活符叶记忆有效期。必须长于火控 data_life（0.2s），使记忆的过期总是发生在
+    // 火控已进入 RECOVERING 之后，避免出现"记忆有效但数据已失效"的反向错位。
+    static constexpr auto kInactiveMemory   = std::chrono::milliseconds { 250 };
     static constexpr auto kFitWarmupSeconds = 0.2;
 
     struct Context {
@@ -168,7 +189,8 @@ struct RuneModel::Impl {
 
         auto get_state(
             const std::array<bool, 5>& inactive, Timestamp start_timestamp,
-            Timestamp current_stamp, bool converged) const noexcept {
+            Timestamp current_stamp, bool converged, int last_inactive_blade,
+            bool last_inactive_valid) const noexcept {
             return State {
                 .x                    = posteriors_state[kX],
                 .y                    = posteriors_state[kY],
@@ -187,6 +209,8 @@ struct RuneModel::Impl {
                 .rotation_angle       = posteriors_state[kA],
                 .face_yaw             = posteriors_state[kPsi],
                 .inactive             = inactive,
+                .last_inactive_blade  = last_inactive_blade,
+                .last_inactive_valid  = last_inactive_valid,
                 .converged            = converged,
                 .use_prediction_speed = use_prediction_speed,
                 .prediction_cost      = sine_valid ? sine_cost : prediction_cost,
@@ -267,6 +291,9 @@ struct RuneModel::Impl {
     Context context;
     std::array<bool, 5> blade_inactive { };
     std::array<Timestamp, 5> blade_inactive_timeout { };
+    int       last_inactive_blade    = -1;
+    bool      last_inactive_valid    = false;
+    Timestamp last_inactive_deadline = { };
     Addition addition { };
     Timestamp init_timestamp { };
     Timestamp current_stamp;
@@ -778,6 +805,9 @@ struct RuneModel::Impl {
 
         blade_inactive.fill(false);
         blade_inactive_timeout.fill(Timestamp { });
+        last_inactive_blade    = -1;
+        last_inactive_valid    = false;
+        last_inactive_deadline = Timestamp { };
         force_sine_until = Timestamp { };
 
         observable.update(context.posteriors_state);
@@ -826,6 +856,10 @@ struct RuneModel::Impl {
         observable.update(context.posteriors_state);
         for (auto&& [inactive, timeout] : std::views::zip(blade_inactive, blade_inactive_timeout)) {
             if (current_stamp >= timeout) inactive = false;
+        }
+        if (last_inactive_valid && current_stamp >= last_inactive_deadline) {
+            last_inactive_valid = false;
+            last_inactive_blade = -1;
         }
 
         addition.predicted.clear();
@@ -913,6 +947,9 @@ struct RuneModel::Impl {
                     blade_inactive[blade] = true;
                     inactive_corrected++;
                     blade_inactive_timeout[blade] = current_stamp + kInactiveTimeout;
+                    last_inactive_blade    = static_cast<int>(blade);
+                    last_inactive_valid    = true;
+                    last_inactive_deadline = current_stamp + kInactiveMemory;
                 } else {
                     active_corrected++;
                     if (observations[i].activation == RuneBullseye::Activation::SmallActive)
@@ -960,8 +997,8 @@ struct RuneModel::Impl {
             update_count += 1;
             context.update_count = update_count;
 
-            auto state = context.get_state(
-                blade_inactive, init_timestamp, current_stamp, converge());
+            auto state = context.get_state(blade_inactive, init_timestamp, current_stamp,
+                converge(), last_inactive_blade, last_inactive_valid);
             const auto t_now =
                 std::chrono::duration<double>(current_stamp - init_timestamp).count();
             const auto forced_sine = current_stamp < force_sine_until;
@@ -1105,8 +1142,9 @@ auto RuneModel::converge() const -> bool { return pimpl->converge(); }
 auto RuneModel::diverged() const -> bool { return pimpl->diverged(); }
 
 auto RuneModel::state() const noexcept -> State {
-    return pimpl->context.get_state(
-        pimpl->blade_inactive, pimpl->init_timestamp, pimpl->current_stamp, pimpl->converge());
+    return pimpl->context.get_state(pimpl->blade_inactive, pimpl->init_timestamp,
+        pimpl->current_stamp, pimpl->converge(), pimpl->last_inactive_blade,
+        pimpl->last_inactive_valid);
 }
 
 auto RuneModel::addition() const -> const Addition& { return pimpl->addition; }

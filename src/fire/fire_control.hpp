@@ -34,6 +34,7 @@ public:
         double fire_cooldown       = 0.7;   // s，连续开火窗口结束后的冷却
         double fire_window         = 0.04;  // s，连续开火窗口上限
         double data_life           = 0.2;   // s，目标数据寿命，超时禁射
+        double blade_life          = 0.3;   // s，无未激活符叶的容忍时长，超时视为目标失效
         double recover_time        = 0.2;   // s，过期后平滑回符心时长
 
         // ---- 切叶确认（RP） ----

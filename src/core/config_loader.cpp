@@ -112,6 +112,7 @@ auto apply_node(AppConfig& cfg, const YAML::Node& root) -> void {
     cfg.fire.fire_cooldown      = get_or(fire, "fire_cooldown", cfg.fire.fire_cooldown);
     cfg.fire.fire_window        = get_or(fire, "fire_window", cfg.fire.fire_window);
     cfg.fire.data_life          = get_or(fire, "data_life", cfg.fire.data_life);
+    cfg.fire.blade_life         = get_or(fire, "blade_life", cfg.fire.blade_life);
     cfg.fire.recover_time       = get_or(fire, "recover_time", cfg.fire.recover_time);
     cfg.fire.switch_angle       = get_or(fire, "switch_angle", cfg.fire.switch_angle);
     cfg.fire.switch_confirm     = get_or(fire, "switch_confirm", cfg.fire.switch_confirm);
@@ -210,6 +211,7 @@ AppConfig load_config(const std::string& yaml_path) {
     clamp_report("detect.keypoint_threshold", cfg.detect.keypoint_threshold, 0.0F, 1.0F);
     clamp_report("fire.bullet_speed", cfg.fire.bullet_speed, 0.1, 200.0);
     clamp_report("fire.max_fly_time", cfg.fire.max_fly_time, 0.001, 10.0);
+    clamp_report("fire.blade_life", cfg.fire.blade_life, 0.001, 10.0);
     clamp_report("fire.recover_time", cfg.fire.recover_time, 0.001, 10.0);
     clamp_report("virtual_rune.dropout_prob", cfg.virtual_rune.dropout_prob, 0.0, 1.0);
     clamp_report("camera.image_width", cfg.camera.image_width, 1, 100000);
